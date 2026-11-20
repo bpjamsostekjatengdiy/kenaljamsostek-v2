@@ -254,14 +254,26 @@ function flagExtension() {
     return;
   }
 
-  showMessage("Ekstensi browser terdeteksi. Hasil Anda tidak masuk peringkat.");
+  showAlertMessage("⚠ EKSTENSI BROWSER TERDETEKSI. Hasil Anda tidak masuk peringkat.");
 }
 
 function showExtensionBlock() {
   elements.startButton.disabled = true;
-  elements.bankStatus.textContent =
-    "Ekstensi browser terdeteksi. Matikan semua ekstensi (termasuk asisten AI), " +
-    "atau buka link ini di browser HP biasa, lalu muat ulang halaman.";
+  elements.bankStatus.classList.add("alert-extension");
+  elements.bankStatus.setAttribute("role", "alert");
+  elements.bankStatus.innerHTML =
+    "<strong>⚠ EKSTENSI BROWSER TERDETEKSI</strong>" +
+    "<span>Matikan semua ekstensi (termasuk asisten AI), " +
+    "atau buka link ini di browser HP biasa, lalu muat ulang halaman.</span>";
+  elements.bankStatus.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+// Peringatan tetap (tidak hilang otomatis) saat ekstensi terdeteksi di tengah pengerjaan.
+function showAlertMessage(text) {
+  window.clearTimeout(showMessage.timeout);
+  elements.message.textContent = text;
+  elements.message.classList.add("alert-extension");
+  elements.message.classList.remove("hidden");
 }
 
 // --------------------------------------------------------------------
@@ -613,6 +625,10 @@ function renderSessionHeading() {
 }
 
 function showMessage(text) {
+  if (state.extensionDetected && elements.message.classList.contains("alert-extension")) {
+    return;
+  }
+
   elements.message.textContent = text;
   elements.message.classList.remove("hidden");
   window.clearTimeout(showMessage.timeout);

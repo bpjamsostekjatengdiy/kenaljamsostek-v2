@@ -1746,3 +1746,38 @@ legend {
 .option-card {
   grid-template-columns: auto auto 1fr;
 }
+
+/* Peringatan ekstensi: tebal, mencolok, berkedip pelan */
+.alert-extension {
+  display: grid;
+  gap: 4px;
+  margin-top: 12px;
+  padding: 14px 16px;
+  border: 2px solid #b91c1c;
+  border-radius: 10px;
+  background: #fef08a;
+  color: #7f1d1d;
+  font-weight: 700;
+  line-height: 1.45;
+  box-shadow: 0 0 0 4px rgba(220, 38, 38, 0.18);
+  animation: alert-extension-pulse 1.6s ease-in-out infinite;
+}
+
+.alert-extension strong {
+  font-size: 1.05rem;
+  color: #b91c1c;
+  letter-spacing: 0.02em;
+}
+
+#message.alert-extension {
+  z-index: 1000;
+}
+
+@keyframes alert-extension-pulse {
+  0%, 100% { box-shadow: 0 0 0 4px rgba(220, 38, 38, 0.18); }
+  50% { box-shadow: 0 0 0 8px rgba(220, 38, 38, 0.32); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .alert-extension { animation: none; }
+}
