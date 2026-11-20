@@ -3,7 +3,7 @@
 // Teks soal digambar di <canvas>, sehingga tidak ada teks soal di DOM
 // yang bisa dibaca atau disalin oleh ekstensi AI.
 const RESPONSE_ENDPOINT_URL =
-  "https://script.google.com/macros/s/AKfycbygnhapLNCMkIa8EBnQw3HVPBmPXmU6VvNFC_zLxJgscRtRa_I-2LTmU2EvPky1q1h7fg/exec";
+  "https://script.google.com/macros/s/AKfycbx6sdk5STv5suSDGFjXeJUd8HmnRPco1VPiYJDEZtIsuIdikB7z6CRGcsjplHBHuyEHPg/exec";
 const MAX_FOCUS_LOST = 2;
 
 const state = {

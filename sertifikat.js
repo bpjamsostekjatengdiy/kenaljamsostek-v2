@@ -1,5 +1,5 @@
 const CERTIFICATE_RESPONSE_ENDPOINT_URL =
-  "https://script.google.com/macros/s/AKfycbygnhapLNCMkIa8EBnQw3HVPBmPXmU6VvNFC_zLxJgscRtRa_I-2LTmU2EvPky1q1h7fg/exec";
+  "https://script.google.com/macros/s/AKfycbx6sdk5STv5suSDGFjXeJUd8HmnRPco1VPiYJDEZtIsuIdikB7z6CRGcsjplHBHuyEHPg/exec";
 const CERTIFICATE_TEMPLATE_URL = "./certificate-template.png";
 const CERTIFICATE_WIDTH = 2000;
 const CERTIFICATE_HEIGHT = 1414;
