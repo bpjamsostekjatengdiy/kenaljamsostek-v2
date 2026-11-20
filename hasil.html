@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hasil Pengukuran Pemahaman</title>
+    <script src="./auth.js" data-protected="true"></script>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="shell result-page">
+      <nav class="top-menu-bar" aria-label="Navigasi halaman">
+        <a class="page-link icon-link" href="./index.html" aria-label="Form peserta">
+          <span class="form-icon" aria-hidden="true"></span>
+          <span class="nav-label">Absen</span>
+        </a>
+        <a class="page-link icon-link" href="./feedback.html" aria-label="Feedback">
+          <span class="feedback-icon" aria-hidden="true"></span>
+          <span class="nav-label">Feedback</span>
+        </a>
+        <a class="page-link page-link-accent icon-link" href="./leaderboard.html" aria-label="Leaderboard">
+          <span class="leaderboard-icon" aria-hidden="true">
+            <i></i>
+            <i></i>
+            <i></i>
+          </span>
+          <span class="nav-label">Leaderboard</span>
+        </a>
+        <a class="page-link icon-link" href="./sertifikat.html" aria-label="Sertifikat">
+          <span class="certificate-icon" aria-hidden="true"></span>
+          <span class="nav-label">Sertifikat</span>
+        </a>
+        <button class="page-link icon-link nav-button" type="button" data-end-session aria-label="End session">
+          <span class="end-session-icon" aria-hidden="true"></span>
+          <span class="nav-label">End Session</span>
+        </button>
+      </nav>
+
+      <section class="intro" aria-labelledby="result-page-title">
+        <div>
+          <p class="eyebrow">Rekap Pemahaman</p>
+          <h1 id="result-page-title">Hasil Pengukuran Pemahaman</h1>
+          <p class="lede" id="result-page-date">Memuat data hasil peserta.</p>
+          <p class="official-results-note">
+            Rekap Feedback menggunakan pengisian pertama untuk setiap nomor HP, tanggal kegiatan,
+            dan tema. Pengisian ulang tetap tersimpan sebagai riwayat belajar.
+          </p>
+        </div>
+      </section>
+
+      <section class="metric-grid" aria-label="Ringkasan hasil">
+        <article class="metric-card metric-card-participants">
+          <span>Total Peserta</span>
+          <div class="split-metric">
+            <p><small>Awal</small><strong id="metric-participants-pre">0</strong></p>
+            <p><small>Akhir</small><strong id="metric-participants-post">0</strong></p>
+          </div>
+        </article>
+        <article class="metric-card metric-card-average">
+          <span>Rata-rata Poin</span>
+          <div class="split-metric">
+            <p><small>Awal</small><strong id="metric-average-pre">0</strong></p>
+            <p><small>Akhir</small><strong id="metric-average-post">0</strong></p>
+          </div>
+        </article>
+        <article class="metric-card metric-card-highest">
+          <span>Poin Tertinggi</span>
+          <div class="split-metric">
+            <p><small>Awal</small><strong id="metric-highest-pre">0</strong></p>
+            <p><small>Akhir</small><strong id="metric-highest-post">0</strong></p>
+          </div>
+        </article>
+        <article class="metric-card metric-card-duration">
+          <span>Rata-rata Waktu</span>
+          <div class="split-metric">
+            <p><small>Awal</small><strong id="metric-duration-pre">0 detik</strong></p>
+            <p><small>Akhir</small><strong id="metric-duration-post">0 detik</strong></p>
+          </div>
+        </article>
+      </section>
+
+      <section class="panel filter-panel" aria-labelledby="filter-title">
+        <div class="dashboard-head compact-head">
+          <div class="section-heading">
+            <span class="section-number">Filter</span>
+            <h2 id="filter-title">Periode Data</h2>
+          </div>
+          <div class="dashboard-controls">
+            <label>
+              <span>Dari tanggal</span>
+              <input id="filter-date-start" type="date" />
+            </label>
+            <label>
+              <span>Sampai tanggal</span>
+              <input id="filter-date-end" type="date" />
+            </label>
+            <label>
+              <span>Sesi</span>
+              <select id="filter-session">
+                <option value="">Semua sesi</option>
+              </select>
+            </label>
+            <label>
+              <span>Tema</span>
+              <select id="filter-theme">
+                <option value="">Semua tema</option>
+              </select>
+            </label>
+            <button class="secondary" id="refresh-results" type="button">Segarkan</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel comparison-panel" aria-labelledby="comparison-title">
+        <div class="section-heading">
+          <span class="section-number">Perbandingan</span>
+          <h2 id="comparison-title">Keberhasilan Proses Literasi</h2>
+        </div>
+        <div class="comparison-legend" aria-label="Keterangan grafik">
+          <span><i class="legend-pre"></i> Awal sesi</span>
+          <span><i class="legend-post"></i> Setelah literasi</span>
+        </div>
+        <div id="comparison-empty" class="empty-state hidden">
+          Perbandingan akan muncul setelah ada data Absensi dan Feedback pada tanggal serta tema yang sama.
+        </div>
+        <div id="comparison-chart" class="comparison-chart"></div>
+      </section>
+
+      <section class="panel result-dashboard" aria-labelledby="dashboard-title">
+        <div class="dashboard-head">
+          <div class="section-heading">
+            <span class="section-number">Hasil</span>
+            <h2 id="dashboard-title">Daftar Peserta</h2>
+          </div>
+        </div>
+
+        <div id="result-empty" class="empty-state hidden">
+          Belum ada data hasil yang bisa ditampilkan.
+        </div>
+
+        <div class="table-wrap results-table-wrap">
+          <table class="results-table">
+            <thead>
+              <tr>
+                <th><button class="sort-button" type="button" data-sort="timestamp">Waktu</button></th>
+                <th><button class="sort-button" type="button" data-sort="name">Nama</button></th>
+                <th><button class="sort-button" type="button" data-sort="whatsapp">Nomor HP</button></th>
+                <th><button class="sort-button" type="button" data-sort="domicile">Kota</button></th>
+                <th><button class="sort-button" type="button" data-sort="session">Sesi</button></th>
+                <th><button class="sort-button" type="button" data-sort="theme">Tema</button></th>
+                <th><button class="sort-button" type="button" data-sort="score">Poin</button></th>
+                <th><button class="sort-button" type="button" data-sort="correct">Sesuai</button></th>
+                <th><button class="sort-button" type="button" data-sort="durationSeconds">Lama</button></th>
+              </tr>
+            </thead>
+            <tbody id="results-body"></tbody>
+          </table>
+        </div>
+        <div class="pagination-bar" id="pagination-bar">
+          <span id="pagination-info">0 data</span>
+          <div class="pagination-actions">
+            <button class="secondary" id="prev-page" type="button">Sebelumnya</button>
+            <button class="secondary" id="next-page" type="button">Berikutnya</button>
+          </div>
+        </div>
+      </section>
+
+      <div id="message" class="message hidden" role="status"></div>
+    </main>
+
+    <script src="./result-policy.js"></script>
+    <script src="./hasil.js"></script>
+  </body>
+</html>

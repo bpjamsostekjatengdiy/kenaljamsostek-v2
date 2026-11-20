@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sertifikat Kegiatan</title>
+    <script src="./access-guard.js?v=20261028-release" data-guard-page="sertifikat"></script>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body class="certificate-page">
+    <main class="certificate-shell">
+      <section class="certificate-controls" aria-labelledby="certificate-title">
+        <div>
+          <p class="eyebrow">Sertifikat</p>
+          <h1 id="certificate-title">Generate Sertifikat Kegiatan</h1>
+          <p class="lede">
+            Masukkan nomor HP yang digunakan saat mengisi feedback hari ini.
+          </p>
+        </div>
+        <form id="certificate-form" class="certificate-form">
+          <label>
+            <span>Nomor HP</span>
+            <input id="certificate-phone" type="tel" inputmode="tel" placeholder="08xxxxxxxxxx" required />
+          </label>
+          <p id="certificate-event-info" class="certificate-event-info">
+            Kegiatan DIJAMIN : memuat episode...
+          </p>
+          <div class="certificate-disclaimer" aria-label="Ketentuan sertifikat">
+            <ul>
+              <li>Hanya peserta yang mengisi quis / feedback <strong>sebelum kegiatan berakhir</strong> yang mendapatkan sertifikat kegiatan.</li>
+              <li>Sertifikat dapat diunduh maksimal 2x permintaan di hari yang sama dengan kegiatan.</li>
+            </ul>
+          </div>
+          <button type="submit">Tampilkan Sertifikat</button>
+          <p id="certificate-status" class="certificate-status hidden"></p>
+        </form>
+      </section>
+
+      <section class="certificate-stage hidden" id="certificate-stage" aria-label="Preview sertifikat">
+        <article class="certificate-canvas" id="certificate-canvas">
+          <p class="certificate-name" id="certificate-name">Nama Peserta</p>
+          <p class="certificate-episode" id="certificate-episode">
+            "Topik kegiatan akan tampil di sini"
+          </p>
+          <p class="certificate-date">
+            Semarang, <span id="certificate-date">16 September 2026</span>
+          </p>
+          <p class="certificate-serial" id="certificate-serial">SERIAL: -</p>
+        </article>
+
+        <div class="certificate-actions">
+          <button id="print-certificate" type="button">Download JPG</button>
+        </div>
+      </section>
+
+      <div id="message" class="message hidden" role="status"></div>
+    </main>
+
+    <script src="./result-policy.js?v=20261028-release"></script>
+    <script src="./sertifikat.js?v=20261028-release"></script>
+  </body>
+</html>
