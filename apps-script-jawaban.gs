@@ -6,12 +6,14 @@
 //   jawaban soal sebelumnya diterima, jadi daftar soal tidak bisa disedot.
 // - Batas waktu per soal ditegakkan di server.
 // - Skor dan durasi dihitung di server.
-// - Feedback wajib kode sesi. Setiap sesi hanya 1 kali per nomor WA per hari per tema.
+// - Sesi (Absensi/Feedback) hanya bisa dikerjakan bila berstatus AKTIF di sheet sesi_aktif.
+// - Setiap sesi hanya 1 kali per nomor WA per hari per tema.
+// - Ekstensi terdeteksi di tengah pengerjaan: pengerjaan langsung dihentikan.
 // =====================================================================
 
 const RESPONSE_SHEET_NAME = "jawaban";
 const BANK_SHEET_NAME = "bank_soal"; // GANTI sesuai nama tab bank soal Anda
-const CODE_SHEET_NAME = "kode_sesi";
+const SESSION_SHEET_NAME = "sesi_aktif";
 const EPISODE_SHEET_NAME = "episode";
 const TIME_ZONE = "Asia/Jakarta";
 
@@ -21,9 +23,7 @@ const ANSWER_GRACE_SECONDS = 5; // toleransi jaringan per soal
 const MIN_SECONDS_PER_QUESTION = 2; // lebih cepat dari ini ditandai mencurigakan
 const MAX_FOCUS_LOST = 2; // keluar layar lebih dari ini ditandai
 const ATTEMPT_TTL_SECONDS = 2 * 60 * 60; // data pengerjaan disimpan 2 jam
-const CODE_REQUIRED_SESSIONS = ["feedback"];
 const ONE_ATTEMPT_SESSIONS = ["absensi", "feedback"];
-const MAX_WRONG_CODE = 5; // salah kode lebih dari ini, nomor WA diblok 30 menit
 
 const OPTION_KEYS = [
   ["A", "opsi_a"],
@@ -42,7 +42,11 @@ function doGet(event) {
   const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
 
   if (params.action === "themes") {
-    return json_({ ok: true, themes: listThemes_(spreadsheet) });
+    return json_({
+      ok: true,
+      themes: listThemes_(spreadsheet),
+      sessions: listActiveSessions_(spreadsheet),
+    });
   }
 
   const requestedSheetName = params.sheet || RESPONSE_SHEET_NAME;
@@ -51,7 +55,7 @@ function doGet(event) {
     return json_({ rows: publicResponseRows_(getOrCreateResponseSheet_(spreadsheet)) });
   }
 
-  // Hanya sheet episode yang boleh dibaca. Bank soal dan kode sesi tertutup.
+  // Hanya sheet episode yang boleh dibaca. Bank soal dan sheet lain tertutup.
   if (requestedSheetName === EPISODE_SHEET_NAME) {
     const sheet = spreadsheet.getSheetByName(EPISODE_SHEET_NAME);
     return json_({ rows: sheet ? sheetToObjects_(sheet) : [] });
@@ -118,18 +122,8 @@ function startAttempt_(spreadsheet, payload) {
   const cache = CacheService.getScriptCache();
   const usedKey = "used:" + [sessionKey, phone, dateKey, theme.toLowerCase()].join("|");
 
-  if (CODE_REQUIRED_SESSIONS.indexOf(sessionKey) >= 0) {
-    const wrongKey = "wrongcode:" + phone;
-    const wrongCount = Number(cache.get(wrongKey) || 0);
-
-    if (wrongCount >= MAX_WRONG_CODE) {
-      return { ok: false, message: "Terlalu banyak kode salah. Coba lagi 30 menit lagi." };
-    }
-
-    if (!isValidSessionCode_(spreadsheet, payload.sessionCode, now)) {
-      cache.put(wrongKey, String(wrongCount + 1), 30 * 60);
-      return { ok: false, message: "Kode sesi salah atau sudah tidak berlaku." };
-    }
+  if (!isSessionActive_(spreadsheet, sessionKey, now)) {
+    return { ok: false, message: "Sesi " + session + " belum dibuka atau sudah ditutup." };
   }
 
   const lock = LockService.getScriptLock();
@@ -222,6 +216,15 @@ function answerQuestion_(spreadsheet, payload) {
 
   attempt.focusLost = Math.max(attempt.focusLost, Math.floor(Number(payload.focusLostCount) || 0));
   attempt.extension = attempt.extension || payload.extensionDetected === true;
+
+  // Ekstensi terdeteksi di tengah pengerjaan: hentikan, sisa soal dianggap kosong.
+  if (payload.abort === true) {
+    attempt.extension = true;
+    attempt.current = attempt.items.length;
+    cache.remove("att:" + attempt.id);
+    cache.remove("active:" + attempt.usedKey);
+    return finishAttempt_(spreadsheet, attempt, now);
+  }
 
   // Kiriman ganda atau salah urutan: kirim ulang soal yang sedang aktif.
   if (Number(payload.index) !== attempt.current) {
@@ -446,36 +449,39 @@ function selectBalancedQuestions_(questions) {
 }
 
 // --------------------------------------------------------------------
-// Kode sesi
-// Sheet kode_sesi: tanggal | kode | buka | tutup
-// Contoh: 20/11/2026 | 482913 | 10:00 | 10:20
+// Sesi aktif - satu-satunya pengendali buka/tutup sesi
+// Sheet sesi_aktif: sesi | status | tanggal | buka | tutup
+//   sesi    : Absensi atau Feedback
+//   status  : AKTIF untuk membuka, selain itu tertutup
+//   tanggal, buka, tutup : opsional. Bila diisi, ikut dibatasi.
+// Tidak ada baris AKTIF untuk suatu sesi = sesi tertutup.
 // --------------------------------------------------------------------
 
-function isValidSessionCode_(spreadsheet, code, now) {
-  const input = String(code || "").trim().toUpperCase();
-
-  if (!input) {
-    return false;
-  }
-
+function isSessionActive_(spreadsheet, sessionKey, now) {
   const todayKey = Utilities.formatDate(now, TIME_ZONE, "yyyy-MM-dd");
   const nowMinutes = Number(Utilities.formatDate(now, TIME_ZONE, "H")) * 60 +
     Number(Utilities.formatDate(now, TIME_ZONE, "m"));
-  const rows = readSheetAsText_(spreadsheet.getSheetByName(CODE_SHEET_NAME));
 
-  return rows.some(function (row) {
+  return readSheetAsText_(spreadsheet.getSheetByName(SESSION_SHEET_NAME)).some(function (row) {
     const open = toMinutes_(row.buka);
     const close = toMinutes_(row.tutup);
 
     return (
-      normalizeDateKey_(row.tanggal) === todayKey &&
-      String(row.kode || "").trim().toUpperCase() === input &&
-      open !== null &&
-      close !== null &&
-      nowMinutes >= open &&
-      nowMinutes < close
+      String(row.sesi || "").trim().toLowerCase() === sessionKey &&
+      String(row.status || "").trim().toUpperCase() === "AKTIF" &&
+      (!String(row.tanggal || "").trim() || normalizeDateKey_(row.tanggal) === todayKey) &&
+      (open === null || nowMinutes >= open) &&
+      (close === null || nowMinutes < close)
     );
   });
+}
+
+function listActiveSessions_(spreadsheet) {
+  const now = new Date();
+  return {
+    absensi: isSessionActive_(spreadsheet, "absensi", now),
+    feedback: isSessionActive_(spreadsheet, "feedback", now),
+  };
 }
 
 function toMinutes_(value) {

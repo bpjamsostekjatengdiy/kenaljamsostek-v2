@@ -18,6 +18,7 @@ const state = {
   isAway: false,
   focusLostCount: 0,
   extensionDetected: false,
+  sessionClosed: false,
   sessionTitle: "",
   questionTimerId: null,
   questionDeadline: 0,
@@ -30,7 +31,6 @@ const elements = {
   whatsappNumber: document.querySelector("#whatsapp-number"),
   companyName: document.querySelector("#company-name"),
   domicile: document.querySelector("#domicile"),
-  sessionCode: document.querySelector("#session-code"),
   activeModuleLabel: document.querySelector("#active-module-label"),
   sessionDate: document.querySelector("#session-date"),
   testSession: document.querySelector("#test-session"),
@@ -96,7 +96,6 @@ elements.participantForm.addEventListener("submit", async (event) => {
       participant: state.participant,
       testSession: state.participant.testSession,
       testTheme: state.participant.testTheme,
-      sessionCode: elements.sessionCode ? elements.sessionCode.value.trim() : "",
       extensionDetected: state.extensionDetected,
     });
 
@@ -254,7 +253,49 @@ function flagExtension() {
     return;
   }
 
-  showAlertMessage("⚠ EKSTENSI BROWSER TERDETEKSI. Hasil Anda tidak masuk peringkat.");
+  abortQuiz();
+}
+
+// Ekstensi muncul di tengah pengerjaan: pengerjaan langsung dihentikan.
+// Sisa soal dianggap kosong dan hasil ditandai EKSTENSI di server.
+async function abortQuiz() {
+  state.isQuizActive = false;
+  stopQuestionTimer();
+  elements.quizPanel.classList.add("hidden");
+  showAlertMessage("⚠ EKSTENSI BROWSER TERDETEKSI. Pengerjaan dihentikan.");
+
+  let result = null;
+
+  for (let attempt = 1; attempt <= 3 && !result; attempt += 1) {
+    try {
+      result = await postJson({
+        action: "answer",
+        attemptId: state.attemptId,
+        index: state.questionIndex,
+        answer: "",
+        abort: true,
+        focusLostCount: state.focusLostCount,
+        extensionDetected: true,
+      });
+    } catch (error) {
+      await new Promise((resolve) => window.setTimeout(resolve, 1500 * attempt));
+    }
+  }
+
+  if (result && result.ok && result.done) {
+    showResult(result);
+  } else {
+    showResultError("Pengerjaan dihentikan.");
+  }
+
+  elements.submitStatus.classList.add("alert-extension");
+  elements.submitStatus.innerHTML =
+    "<strong>⚠ PENGERJAAN DIHENTIKAN</strong>" +
+    "<span>Ekstensi browser terdeteksi saat mengerjakan. Sisa soal dianggap kosong " +
+    "dan hasil Anda tidak masuk peringkat.</span>";
+  elements.message.classList.add("hidden");
+  elements.message.classList.remove("alert-extension");
+  elements.resultPanel.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function showExtensionBlock() {
@@ -305,9 +346,18 @@ async function loadThemes() {
       elements.testTheme.append(item);
     });
 
+    // Sesi dibuka/ditutup hanya dari sheet sesi_aktif di spreadsheet.
+    const sessions = payload.sessions || {};
+    const sessionKey = String(elements.testSession.value || "").toLowerCase();
+    state.sessionClosed = sessions[sessionKey] !== true;
+
     elements.testTheme.disabled = themes.length === 0;
-    state.isQuestionBankLoaded = themes.length > 0;
-    elements.bankStatus.textContent = themes.length ? "" : "Belum ada tema aktif.";
+    state.isQuestionBankLoaded = themes.length > 0 && !state.sessionClosed;
+    elements.bankStatus.textContent = state.sessionClosed
+      ? `Sesi ${elements.testSession.value} belum dibuka atau sudah ditutup.`
+      : themes.length
+        ? ""
+        : "Belum ada tema aktif.";
     updateActiveModuleLabel();
   } catch (error) {
     state.isQuestionBankLoaded = false;
@@ -531,7 +581,7 @@ function getThemeLabel(value) {
 }
 
 function setLoading(isLoading, text = "Memuat...") {
-  elements.startButton.disabled = isLoading || state.extensionDetected;
+  elements.startButton.disabled = isLoading || state.extensionDetected || state.sessionClosed;
   elements.startButton.textContent = isLoading ? text : "Yuk Mulai";
 }
 
