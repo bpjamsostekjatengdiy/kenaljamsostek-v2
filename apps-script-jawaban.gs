@@ -4,26 +4,35 @@
 // - Kunci jawaban tidak pernah dikirim ke browser.
 // - Soal dikirim SATU PER SATU. Soal berikutnya baru dikirim setelah
 //   jawaban soal sebelumnya diterima, jadi daftar soal tidak bisa disedot.
-// - Batas waktu per soal ditegakkan di server.
+// - Tanpa batas waktu per soal. Durasi total dihitung di server.
 // - Skor dan durasi dihitung di server.
-// - Sesi (Absensi/Feedback) hanya bisa dikerjakan bila berstatus AKTIF di sheet sesi_aktif.
-// - Setiap sesi hanya 1 kali per nomor WA per hari per tema.
-// - Ekstensi terdeteksi di tengah pengerjaan: pengerjaan langsung dihentikan.
+// - Sesi (Absensi = pretest, Feedback = posttest) diatur di sheet sesi_aktif:
+//   status AKTIF/NONAKTIF, jam buka-tutup, anti_curang ENABLE/DISABLE,
+//   dan maks_percobaan per nomor WA per hari per tema.
+// - Jatah percobaan dihitung dari sheet log_mulai. Hapus baris peserta di sana
+//   untuk mengembalikan jatahnya.
+// - Semua pesan ke peserta diambil dari sheet pesan (dibuat otomatis bila belum ada).
+// - anti_curang ENABLE: deteksi ekstensi aktif saat pengerjaan. Ekstensi
+//   terdeteksi = pengerjaan dihentikan dan hasil ditandai EKSTENSI.
 // =====================================================================
 
 const RESPONSE_SHEET_NAME = "jawaban";
 const BANK_SHEET_NAME = "bank_soal"; // GANTI sesuai nama tab bank soal Anda
 const SESSION_SHEET_NAME = "sesi_aktif";
 const EPISODE_SHEET_NAME = "episode";
+const SCRIPT_VERSION = "2026-11-23.5"; // cek lewat ?action=themes untuk memastikan deploy terbaru
+const ALLOWLIST_SHEET_NAME = "pengecualian_ekstensi"; // pola elemen sisipan yang boleh diabaikan
+const LOG_SHEET_NAME = "log_mulai"; // satu baris per klik mulai; hapus baris untuk mengembalikan jatah
+const MESSAGE_SHEET_NAME = "pesan"; // template pesan yang tampil ke peserta
 const TIME_ZONE = "Asia/Jakarta";
 
 const MAX_ACTIVE_QUESTIONS = 10;
-const SECONDS_PER_QUESTION = 25; // batas waktu per soal
-const ANSWER_GRACE_SECONDS = 5; // toleransi jaringan per soal
 const MIN_SECONDS_PER_QUESTION = 2; // lebih cepat dari ini ditandai mencurigakan
-const MAX_FOCUS_LOST = 2; // keluar layar lebih dari ini ditandai
-const ATTEMPT_TTL_SECONDS = 2 * 60 * 60; // data pengerjaan disimpan 2 jam
-const ONE_ATTEMPT_SESSIONS = ["absensi", "feedback"];
+const DEFAULT_MAX_FOCUS_LOST = 2; // keluar layar sebanyak ini atau lebih = tidak masuk peringkat (bila kolom kosong)
+const ATTEMPT_TTL_SECONDS = 6 * 60 * 60; // data pengerjaan disimpan 6 jam (batas CacheService)
+const DEFAULT_MAX_ATTEMPTS = 1; // dipakai bila kolom maks_percobaan kosong
+const SESSION_HEADERS = ["sesi", "status", "tanggal", "buka", "tutup", "anti_curang", "maks_percobaan", "tampil_pembahasan", "batas_keluar_layar"];
+const ATTEMPT_CHOICES = ["1", "2", "3", "4", "5", "10", "TANPA BATAS"];
 
 const OPTION_KEYS = [
   ["A", "opsi_a"],
@@ -45,7 +54,11 @@ function doGet(event) {
     return json_({
       ok: true,
       themes: listThemes_(spreadsheet),
-      sessions: listActiveSessions_(spreadsheet),
+      sessions: listSessionOpen_(spreadsheet),
+      sessionConfigs: listSessionConfigs_(spreadsheet),
+      messages: getMessages_(spreadsheet),
+      extensionAllowlist: getExtensionAllowlist_(spreadsheet),
+      version: SCRIPT_VERSION,
     });
   }
 
@@ -102,18 +115,11 @@ function startAttempt_(spreadsheet, payload) {
   const theme = String(payload.testTheme || "").trim();
 
   if (!participant.fullName || !participant.whatsappNumber || !participant.domicile || !theme) {
-    return { ok: false, message: "Data peserta belum lengkap." };
+    return { ok: false, message: msg_(spreadsheet, "data_belum_lengkap") };
   }
 
   if (["absensi", "feedback"].indexOf(sessionKey) < 0) {
     return { ok: false, message: "Sesi tidak dikenal." };
-  }
-
-  if (payload.extensionDetected) {
-    return {
-      ok: false,
-      message: "Ekstensi browser terdeteksi. Matikan semua ekstensi atau pakai browser HP biasa, lalu muat ulang.",
-    };
   }
 
   const now = new Date();
@@ -122,8 +128,10 @@ function startAttempt_(spreadsheet, payload) {
   const cache = CacheService.getScriptCache();
   const usedKey = "used:" + [sessionKey, phone, dateKey, theme.toLowerCase()].join("|");
 
-  if (!isSessionActive_(spreadsheet, sessionKey, now)) {
-    return { ok: false, message: "Sesi " + session + " belum dibuka atau sudah ditutup." };
+  const config = getSessionConfig_(spreadsheet, sessionKey, now);
+
+  if (!config.open) {
+    return { ok: false, message: msg_(spreadsheet, "sesi_tutup", { sesi: session }) };
   }
 
   const lock = LockService.getScriptLock();
@@ -138,20 +146,26 @@ function startAttempt_(spreadsheet, payload) {
       return publicState_(JSON.parse(activeRaw), now);
     }
 
-    if (ONE_ATTEMPT_SESSIONS.indexOf(sessionKey) >= 0) {
-      if (cache.get(usedKey) || hasSubmitted_(spreadsheet, phone, dateKey, theme, sessionKey)) {
-        return {
-          ok: false,
-          message: "Nomor WA ini sudah mengerjakan " + session + " hari ini untuk tema ini.",
-        };
-      }
+    // Jatah percobaan: dihitung dari sheet log_mulai (sejak klik mulai),
+    // per nomor WA per hari per tema. Baris yang dihapus admin tidak dihitung.
+    const usedCount = countStarts_(spreadsheet, phone, dateKey, theme, sessionKey);
+
+    if (config.maxAttempts > 0 && usedCount >= config.maxAttempts) {
+      return {
+        ok: false,
+        message: msg_(spreadsheet, "batas_percobaan", {
+          sesi: session,
+          terpakai: usedCount,
+          maks: config.maxAttempts,
+        }),
+      };
     }
 
     const bankSession = sessionKey === "feedback" ? "POST" : "PRE";
     const pool = loadQuestionPool_(spreadsheet, theme, bankSession);
 
     if (pool.length === 0) {
-      return { ok: false, message: "Tidak ada soal aktif untuk tema dan sesi ini." };
+      return { ok: false, message: msg_(spreadsheet, "soal_kosong", { sesi: session }) };
     }
 
     const items = selectBalancedQuestions_(pool).map(function (question) {
@@ -170,6 +184,7 @@ function startAttempt_(spreadsheet, payload) {
         options: shuffled,
         correct: correctOption.letter,
         correctText: correctOption.text,
+        explanation: question.explanation,
       };
     });
 
@@ -185,12 +200,30 @@ function startAttempt_(spreadsheet, payload) {
       issuedAt: now.getTime(),
       answers: [],
       focusLost: 0,
+      copyAttempts: 0,
       extension: false,
+      antiCheat: config.antiCheat,
+      showReview: config.showReview,
+      maxFocusLost: config.maxFocusLost,
+      extensionSource: "",
+      attemptNumber: usedCount + 1,
+      maxAttempts: config.maxAttempts,
       items: items,
     };
 
-    // Tandai sejak mulai, supaya peserta tidak bisa membuka ulang untuk melihat soal baru.
-    cache.put(usedKey, now.toISOString(), 6 * 60 * 60);
+    // Jatah terpakai sejak mulai, supaya peserta tidak bisa membuka ulang untuk melihat soal baru.
+    getOrCreateLogSheet_(spreadsheet).appendRow([
+      now,
+      participant.fullName,
+      participant.whatsappNumber,
+      participant.companyName,
+      participant.domicile,
+      session,
+      theme,
+      attempt.id,
+      usedCount + 1,
+      "MULAI",
+    ]);
     cache.put("active:" + usedKey, attempt.id, ATTEMPT_TTL_SECONDS);
     saveAttempt_(attempt);
     return publicState_(attempt, now);
@@ -208,17 +241,25 @@ function answerQuestion_(spreadsheet, payload) {
   const raw = cache.get("att:" + String(payload.attemptId || ""));
 
   if (!raw) {
-    return { ok: false, message: "Data pengerjaan tidak ditemukan atau sudah kedaluwarsa." };
+    return { ok: false, message: msg_(spreadsheet, "pengerjaan_kedaluwarsa") };
   }
 
   const attempt = JSON.parse(raw);
   const now = new Date();
 
-  attempt.focusLost = Math.max(attempt.focusLost, Math.floor(Number(payload.focusLostCount) || 0));
-  attempt.extension = attempt.extension || payload.extensionDetected === true;
+  // Sinyal kecurangan hanya dipakai bila anti_curang ENABLE.
+  if (attempt.antiCheat) {
+    attempt.focusLost = Math.max(attempt.focusLost, Math.floor(Number(payload.focusLostCount) || 0));
+    attempt.copyAttempts = Math.max(attempt.copyAttempts || 0, Math.floor(Number(payload.copyAttempts) || 0));
+    attempt.extension = attempt.extension || payload.extensionDetected === true;
+
+    if (payload.extensionSource && !attempt.extensionSource) {
+      attempt.extensionSource = String(payload.extensionSource).slice(0, 200);
+    }
+  }
 
   // Ekstensi terdeteksi di tengah pengerjaan: hentikan, sisa soal dianggap kosong.
-  if (payload.abort === true) {
+  if (payload.abort === true && attempt.antiCheat) {
     attempt.extension = true;
     attempt.current = attempt.items.length;
     cache.remove("att:" + attempt.id);
@@ -232,8 +273,13 @@ function answerQuestion_(spreadsheet, payload) {
     return publicState_(attempt, now);
   }
 
-  const deadline = attempt.issuedAt + (SECONDS_PER_QUESTION + ANSWER_GRACE_SECONDS) * 1000;
-  attempt.answers[attempt.current] = now.getTime() <= deadline ? normalizeAnswer_(payload.answer) : "";
+  const answer = normalizeAnswer_(payload.answer);
+
+  if (!answer) {
+    return { ok: false, retry: true, message: msg_(spreadsheet, "pilih_jawaban") };
+  }
+
+  attempt.answers[attempt.current] = answer;
   attempt.current += 1;
   attempt.issuedAt = now.getTime();
 
@@ -283,7 +329,9 @@ function finishAttempt_(spreadsheet, attempt, finishedAt) {
     notes.push("TERLALU_CEPAT");
   }
 
-  if (attempt.focusLost > MAX_FOCUS_LOST) {
+  const focusLimit = attempt.maxFocusLost === undefined ? DEFAULT_MAX_FOCUS_LOST : attempt.maxFocusLost;
+
+  if (attempt.antiCheat && focusLimit > 0 && attempt.focusLost >= focusLimit) {
     notes.push("KELUAR_LAYAR");
   }
 
@@ -310,17 +358,48 @@ function finishAttempt_(spreadsheet, attempt, finishedAt) {
     0,
     attempt.focusLost,
     notes.join(","),
+    attempt.antiCheat ? "ENABLE" : "DISABLE",
+    attempt.copyAttempts || 0,
+    attempt.attemptNumber || 1,
+    attempt.extensionSource || "",
   ]);
+
+  updateLogStatus_(
+    spreadsheet,
+    attempt.id,
+    attempt.extension ? "DIHENTIKAN (EKSTENSI: " + (attempt.extensionSource || "-") + ")" : "SELESAI",
+  );
+
+  // Pembahasan hanya dikirim setelah pengerjaan selesai, bila tampil_pembahasan = YA
+  // dan pengerjaan tidak dihentikan karena ekstensi.
+  const review = attempt.showReview && !attempt.extension
+    ? detail.map(function (row, index) {
+        return {
+          order: row.order,
+          question: row.question,
+          selectedAnswer: row.selectedAnswer,
+          selectedAnswerText: row.selectedAnswerText,
+          correctAnswer: row.correctAnswer,
+          correctAnswerText: row.correctAnswerText,
+          isCorrect: row.isCorrect,
+          explanation: attempt.items[index].explanation || "",
+        };
+      })
+    : [];
 
   return {
     ok: true,
     done: true,
+    review: review,
     score: score,
     correct: correct,
     totalQuestions: total,
     durationSeconds: durationSeconds,
     durationText: formatDuration_(durationSeconds),
     flagged: notes.length > 0,
+    flags: notes,
+    focusLost: attempt.focusLost,
+    maxFocusLost: focusLimit,
   };
 }
 
@@ -331,7 +410,6 @@ function saveAttempt_(attempt) {
 // Hanya soal yang sedang aktif yang dikirim ke browser, tanpa kunci.
 function publicState_(attempt, now) {
   const item = attempt.items[attempt.current];
-  const elapsed = Math.floor((now.getTime() - attempt.issuedAt) / 1000);
 
   return {
     ok: true,
@@ -339,8 +417,11 @@ function publicState_(attempt, now) {
     attemptId: attempt.id,
     index: attempt.current,
     total: attempt.items.length,
-    secondsPerQuestion: SECONDS_PER_QUESTION,
-    secondsLeft: Math.max(0, SECONDS_PER_QUESTION - elapsed),
+    elapsedSeconds: Math.max(0, Math.floor((now.getTime() - attempt.startedAt) / 1000)),
+    antiCheat: attempt.antiCheat,
+    attemptNumber: attempt.attemptNumber || 1,
+    maxAttempts: attempt.maxAttempts,
+    maxFocusLost: attempt.maxFocusLost === undefined ? DEFAULT_MAX_FOCUS_LOST : attempt.maxFocusLost,
     question: {
       text: item.text,
       moduleName: item.moduleName,
@@ -385,6 +466,7 @@ function loadQuestionPool_(spreadsheet, theme, bankSession) {
         session: String(row.sesi || "").trim().toUpperCase(),
         text: String(row.pertanyaan || "").trim(),
         key: normalizeAnswer_(row.jawaban_benar || row.kunci || ""),
+        explanation: String(row.pembahasan || "").trim(),
         options: options,
       };
     })
@@ -449,20 +531,28 @@ function selectBalancedQuestions_(questions) {
 }
 
 // --------------------------------------------------------------------
-// Sesi aktif - satu-satunya pengendali buka/tutup sesi
-// Sheet sesi_aktif: sesi | status | tanggal | buka | tutup
-//   sesi    : Absensi atau Feedback
-//   status  : AKTIF untuk membuka, selain itu tertutup
+// Sesi aktif - satu-satunya pengendali sesi
+// Sheet sesi_aktif: sesi | status | tanggal | buka | tutup | anti_curang | maks_percobaan
+//   sesi           : Absensi (pretest) atau Feedback (posttest)
+//   status         : AKTIF untuk membuka, selain itu tertutup
 //   tanggal, buka, tutup : opsional. Bila diisi, ikut dibatasi.
+//   anti_curang    : ENABLE (canvas, blokir salin, deteksi ekstensi) atau DISABLE
+//   maks_percobaan : 1, 2, 3, 4, 5, 10, atau TANPA BATAS
+//   tampil_pembahasan : YA atau TIDAK
+//   batas_keluar_layar : keluar layar sebanyak ini atau lebih = tidak masuk peringkat
+//                        (1, 2, 3, 4, 5, 10, atau TANPA BATAS; hanya berlaku saat ENABLE)
+// Kolom dan dropdown yang belum ada dibuat otomatis oleh ensureSessionSheet_.
 // Tidak ada baris AKTIF untuk suatu sesi = sesi tertutup.
 // --------------------------------------------------------------------
 
-function isSessionActive_(spreadsheet, sessionKey, now) {
+function getSessionConfig_(spreadsheet, sessionKey, now) {
+  ensureSessionSheet_(spreadsheet);
+
   const todayKey = Utilities.formatDate(now, TIME_ZONE, "yyyy-MM-dd");
   const nowMinutes = Number(Utilities.formatDate(now, TIME_ZONE, "H")) * 60 +
     Number(Utilities.formatDate(now, TIME_ZONE, "m"));
 
-  return readSheetAsText_(spreadsheet.getSheetByName(SESSION_SHEET_NAME)).some(function (row) {
+  const match = readSheetAsText_(spreadsheet.getSheetByName(SESSION_SHEET_NAME)).filter(function (row) {
     const open = toMinutes_(row.buka);
     const close = toMinutes_(row.tutup);
 
@@ -473,15 +563,135 @@ function isSessionActive_(spreadsheet, sessionKey, now) {
       (open === null || nowMinutes >= open) &&
       (close === null || nowMinutes < close)
     );
-  });
+  })[0];
+
+  if (!match) {
+    return {
+      open: false,
+      antiCheat: true,
+      maxAttempts: DEFAULT_MAX_ATTEMPTS,
+      showReview: false,
+      maxFocusLost: DEFAULT_MAX_FOCUS_LOST,
+    };
+  }
+
+  const reviewText = String(match.tampil_pembahasan || "").trim().toUpperCase();
+
+  return {
+    open: true,
+    antiCheat: String(match.anti_curang || "").trim().toUpperCase() !== "DISABLE",
+    maxAttempts: parseMaxAttempts_(match.maks_percobaan),
+    // Kosong: pretest (Absensi) menampilkan pembahasan, posttest (Feedback) tidak.
+    showReview: reviewText ? reviewText === "YA" : sessionKey === "absensi",
+    maxFocusLost: parseLimit_(match.batas_keluar_layar, DEFAULT_MAX_FOCUS_LOST),
+  };
 }
 
-function listActiveSessions_(spreadsheet) {
+// 0 berarti tanpa batas.
+function parseLimit_(value, fallback) {
+  const text = String(value || "").trim().toUpperCase();
+
+  if (text === "TANPA BATAS") {
+    return 0;
+  }
+
+  const number = parseInt(text, 10);
+  return number > 0 ? number : fallback;
+}
+
+// 0 berarti tanpa batas.
+function parseMaxAttempts_(value) {
+  const text = String(value || "").trim().toUpperCase();
+
+  if (text === "TANPA BATAS") {
+    return 0;
+  }
+
+  const number = parseInt(text, 10);
+  return number > 0 ? number : DEFAULT_MAX_ATTEMPTS;
+}
+
+// Format lama (true/false) dipertahankan agar browser yang masih menyimpan versi lama tetap jalan.
+function listSessionOpen_(spreadsheet) {
+  const configs = listSessionConfigs_(spreadsheet);
+  return { absensi: configs.absensi.open, feedback: configs.feedback.open };
+}
+
+function listSessionConfigs_(spreadsheet) {
   const now = new Date();
-  return {
-    absensi: isSessionActive_(spreadsheet, "absensi", now),
-    feedback: isSessionActive_(spreadsheet, "feedback", now),
-  };
+  const result = {};
+
+  ["absensi", "feedback"].forEach(function (key) {
+    const config = getSessionConfig_(spreadsheet, key, now);
+    result[key] = {
+      open: config.open,
+      antiCheat: config.antiCheat,
+      maxAttempts: config.maxAttempts,
+      showReview: config.showReview,
+      maxFocusLost: config.maxFocusLost,
+    };
+  });
+
+  return result;
+}
+
+// Lengkapi kolom anti_curang, maks_percobaan, dan tampil_pembahasan beserta dropdown-nya bila belum ada.
+function ensureSessionSheet_(spreadsheet) {
+  const sheet = spreadsheet.getSheetByName(SESSION_SHEET_NAME) || spreadsheet.insertSheet(SESSION_SHEET_NAME);
+  const width = Math.max(sheet.getLastColumn(), 1);
+  const headers = sheet.getRange(1, 1, 1, width).getDisplayValues()[0].map(function (header) {
+    return String(header || "").trim().toLowerCase();
+  });
+  const missing = SESSION_HEADERS.filter(function (header) {
+    return headers.indexOf(header) < 0;
+  });
+
+  if (missing.length === 0) {
+    return;
+  }
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+
+  try {
+    sheet.getRange(1, 1, 1, SESSION_HEADERS.length).setValues([SESSION_HEADERS]);
+    sheet.getRange(2, 6, 19, 1).setDataValidation(
+      SpreadsheetApp.newDataValidation().requireValueInList(["ENABLE", "DISABLE"], true).setAllowInvalid(false).build(),
+    );
+    sheet.getRange(2, 7, 19, 1).setNumberFormat("@").setDataValidation(
+      SpreadsheetApp.newDataValidation().requireValueInList(ATTEMPT_CHOICES, true).setAllowInvalid(false).build(),
+    );
+    sheet.getRange(2, 8, 19, 1).setDataValidation(
+      SpreadsheetApp.newDataValidation().requireValueInList(["YA", "TIDAK"], true).setAllowInvalid(false).build(),
+    );
+    sheet.getRange(2, 9, 19, 1).setNumberFormat("@").setDataValidation(
+      SpreadsheetApp.newDataValidation().requireValueInList(ATTEMPT_CHOICES, true).setAllowInvalid(false).build(),
+    );
+
+    // Baris yang sudah ada diberi nilai awal: ENABLE, 1 kali, pembahasan YA untuk Absensi.
+    const rows = Math.max(sheet.getLastRow() - 1, 0);
+
+    if (rows > 0) {
+      const current = sheet.getRange(2, 1, rows, 9).getDisplayValues();
+      sheet.getRange(2, 6, rows, 4).setValues(
+        current.map(function (row) {
+          if (!String(row[0] || "").trim()) {
+            return [row[5] || "", row[6] || "", row[7] || "", row[8] || ""];
+          }
+
+          const isPretest = String(row[0]).trim().toLowerCase() === "absensi";
+          return [
+            row[5] || "ENABLE",
+            row[6] || String(DEFAULT_MAX_ATTEMPTS),
+            row[7] || (isPretest ? "YA" : "TIDAK"),
+            row[8] || String(DEFAULT_MAX_FOCUS_LOST),
+          ];
+        }),
+      );
+    }
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function toMinutes_(value) {
@@ -515,6 +725,10 @@ function getOrCreateResponseSheet_(spreadsheet) {
     "cetak_sertif",
     "keluar_layar",
     "catatan",
+    "anti_curang",
+    "percobaan_salin",
+    "percobaan_ke",
+    "deteksi_ekstensi",
   ];
 
   if (sheet.getLastRow() === 0) {
@@ -546,11 +760,38 @@ function publicResponseRows_(sheet) {
   });
 }
 
-function hasSubmitted_(spreadsheet, phone, dateKey, theme, sessionKey) {
-  const sheet = spreadsheet.getSheetByName(RESPONSE_SHEET_NAME);
+// --------------------------------------------------------------------
+// Log mulai: satu baris per klik mulai. Dasar penghitungan jatah percobaan.
+// --------------------------------------------------------------------
 
-  if (!sheet || sheet.getLastRow() < 2) {
-    return false;
+const LOG_HEADERS = [
+  "timestamp",
+  "nama_lengkap",
+  "nomor_wa",
+  "nama_perusahaan",
+  "kota_domisili",
+  "sesi",
+  "tema",
+  "attempt_id",
+  "percobaan_ke",
+  "status",
+];
+
+function getOrCreateLogSheet_(spreadsheet) {
+  const sheet = spreadsheet.getSheetByName(LOG_SHEET_NAME) || spreadsheet.insertSheet(LOG_SHEET_NAME);
+
+  if (sheet.getLastRow() === 0) {
+    sheet.appendRow(LOG_HEADERS);
+  }
+
+  return sheet;
+}
+
+function countStarts_(spreadsheet, phone, dateKey, theme, sessionKey) {
+  const sheet = getOrCreateLogSheet_(spreadsheet);
+
+  if (sheet.getLastRow() < 2) {
+    return 0;
   }
 
   const values = sheet.getDataRange().getValues();
@@ -563,13 +804,160 @@ function hasSubmitted_(spreadsheet, phone, dateKey, theme, sessionKey) {
   const timestampColumn = headers.indexOf("timestamp");
   const themeKey = theme.trim().toLowerCase();
 
-  return values.slice(1).some(function (row) {
+  return values.slice(1).filter(function (row) {
     return (
       normalizePhone_(row[phoneColumn]) === phone &&
       String(row[sessionColumn] || "").trim().toLowerCase() === sessionKey &&
       String(row[themeColumn] || "").trim().toLowerCase() === themeKey &&
       normalizeDateKey_(row[timestampColumn]) === dateKey
     );
+  }).length;
+}
+
+function updateLogStatus_(spreadsheet, attemptId, status) {
+  const sheet = spreadsheet.getSheetByName(LOG_SHEET_NAME);
+
+  if (!sheet || sheet.getLastRow() < 2) {
+    return;
+  }
+
+  const values = sheet.getDataRange().getValues();
+  const idColumn = values[0].indexOf("attempt_id");
+  const statusColumn = values[0].indexOf("status");
+
+  for (let index = values.length - 1; index >= 1; index -= 1) {
+    if (values[index][idColumn] === attemptId) {
+      sheet.getRange(index + 1, statusColumn + 1).setValue(status);
+      return;
+    }
+  }
+}
+
+// --------------------------------------------------------------------
+// Template pesan (sheet pesan: kode | pesan | keterangan)
+// Ubah kolom pesan untuk mengganti teks. Jangan ubah kolom kode.
+// Teks dalam kurung kurawal, misalnya {sesi}, diganti otomatis.
+// Baris yang hilang dibuat ulang dengan teks bawaan.
+// --------------------------------------------------------------------
+
+const DEFAULT_MESSAGES = [
+  ["sesi_tutup", "Sesi {sesi} belum dibuka atau sudah ditutup.", "Sesi berstatus tertutup di sesi_aktif. {sesi}"],
+  ["data_belum_lengkap", "Data peserta belum lengkap.", "Nama, nomor WA, atau kota belum diisi."],
+  ["batas_percobaan", "Nomor WA ini sudah memakai {terpakai} dari {maks} kesempatan {sesi} hari ini untuk tema ini.", "Jatah maks_percobaan habis. {terpakai} {maks} {sesi}"],
+  ["soal_kosong", "Tidak ada soal aktif untuk tema dan sesi ini.", "Bank soal tidak punya soal AKTIF untuk tema/sesi ini. {sesi}"],
+  ["pengerjaan_kedaluwarsa", "Data pengerjaan tidak ditemukan atau sudah kedaluwarsa.", "Pengerjaan lebih dari 6 jam atau data sudah dipakai."],
+  ["pilih_jawaban", "Pilih satu tanggapan dulu.", "Peserta menekan Lanjut tanpa memilih jawaban."],
+  ["tema_belum_aktif", "Belum ada tema aktif.", "Halaman registrasi, bila tidak ada tema AKTIF."],
+  ["tema_gagal_dimuat", "Tema belum bisa dimuat.", "Halaman registrasi, bila koneksi ke server gagal."],
+  ["koneksi_bermasalah", "Koneksi bermasalah. Coba lagi.", "Gagal memulai karena koneksi."],
+  ["aturan_enable", "Butir tidak bisa diulang. Jangan keluar dari halaman ini. Menyalin soal dan ekstensi browser (termasuk asisten AI) tidak diizinkan.", "Teks di atas soal saat anti_curang ENABLE."],
+  ["aturan_disable", "Butir tidak bisa diulang.", "Teks di atas soal saat anti_curang DISABLE."],
+  ["peringatan_salin", "⚠ Menyalin soal tidak diizinkan. Percobaan tercatat ({jumlah}x).", "Saat peserta mencoba salin/klik kanan (ENABLE). {jumlah}"],
+  ["peringatan_keluar_layar", "⚠ Anda keluar dari halaman quiz {jumlah}x. Keluar {batas}x, hasil tidak masuk peringkat.", "Saat peserta kembali ke halaman quiz, belum mencapai batas_keluar_layar (ENABLE). {jumlah} {batas}"],
+  ["keluar_layar_melewati_batas", "⚠ Anda sudah keluar dari halaman quiz {jumlah}x. Hasil Anda tidak masuk peringkat.", "Saat jumlah keluar mencapai batas_keluar_layar (ENABLE). {jumlah} {batas}"],
+  ["ekstensi_terdeteksi", "⚠ EKSTENSI BROWSER TERDETEKSI. Pengerjaan dihentikan.", "Notifikasi saat ekstensi terdeteksi (ENABLE)."],
+  ["pengerjaan_dihentikan_judul", "⚠ PENGERJAAN DIHENTIKAN", "Judul kotak hasil saat ekstensi terdeteksi."],
+  ["pengerjaan_dihentikan_isi", "Ekstensi browser terdeteksi saat mengerjakan. Sisa soal dianggap kosong dan hasil Anda tidak masuk peringkat.", "Isi kotak hasil saat ekstensi terdeteksi."],
+  ["sumber_ekstensi", "Terdeteksi: {sumber}", "Baris kecil di kotak hasil: elemen sisipan yang terdeteksi. Salin teks ini ke sheet pengecualian_ekstensi bila ingin diabaikan. {sumber}"],
+  ["hasil_keluar_layar_judul", "⚠ TIDAK MASUK PERINGKAT", "Judul kotak di halaman hasil bila keluar layar mencapai batas."],
+  ["hasil_keluar_layar", "Anda keluar/pindah dari halaman quiz {jumlah}x (batas {batas}x). Hasil Anda tetap tersimpan, tetapi tidak masuk peringkat.", "Isi kotak di halaman hasil bila keluar layar mencapai batas. {jumlah} {batas}"],
+  ["hasil_terlalu_cepat", "Pengerjaan terlalu cepat sehingga hasil Anda tidak masuk peringkat.", "Isi kotak di halaman hasil bila pengerjaan terlalu cepat."],
+  ["hasil_dengan_pembahasan", "Jawaban tersimpan. Pembahasan tiap butir ada di bawah.", "Halaman hasil bila tampil_pembahasan YA."],
+  ["hasil_tanpa_pembahasan", "Jawaban tersimpan. Kunci dan pembahasan dibagikan setelah sesi ditutup.", "Halaman hasil bila tampil_pembahasan TIDAK."],
+  ["jawaban_gagal_terkirim", "Jawaban belum terkirim. Muat ulang halaman dan isi data yang sama untuk melanjutkan.", "Jawaban gagal dikirim 3 kali."],
+];
+
+// --------------------------------------------------------------------
+// Pengecualian ekstensi (sheet pengecualian_ekstensi: pola | keterangan)
+// Isi pola dengan sebagian teks "Terdeteksi: ..." dari halaman hasil,
+// misalnya grammarly. Elemen yang cocok tidak dianggap kecurangan.
+// --------------------------------------------------------------------
+
+function getExtensionAllowlist_(spreadsheet) {
+  const sheet = spreadsheet.getSheetByName(ALLOWLIST_SHEET_NAME) || spreadsheet.insertSheet(ALLOWLIST_SHEET_NAME);
+
+  if (sheet.getLastRow() === 0) {
+    sheet.appendRow(["pola", "keterangan"]);
+  }
+
+  return readSheetAsText_(sheet)
+    .map(function (row) {
+      return String(row.pola || "").trim().toLowerCase();
+    })
+    .filter(function (pattern) {
+      return pattern.length >= 3;
+    });
+}
+
+let messageCache_ = null;
+
+function getMessages_(spreadsheet) {
+  if (messageCache_) {
+    return messageCache_;
+  }
+
+  const sheet = spreadsheet.getSheetByName(MESSAGE_SHEET_NAME) || spreadsheet.insertSheet(MESSAGE_SHEET_NAME);
+
+  if (sheet.getLastRow() === 0) {
+    sheet.appendRow(["kode", "pesan", "keterangan"]);
+  }
+
+  // Teks bawaan versi lama yang maknanya sudah berubah diganti otomatis (bila belum diubah admin).
+  const OUTDATED = { peringatan_keluar_layar: "⚠ Anda keluar dari halaman quiz {jumlah}x. Lebih dari {batas}x tidak masuk peringkat." };
+  if (sheet.getLastRow() > 1) {
+    const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, 2).getDisplayValues();
+    values.forEach(function (row, index) {
+      const key = String(row[0] || "").trim();
+      if (OUTDATED[key] && row[1] === OUTDATED[key]) {
+        const fresh = DEFAULT_MESSAGES.filter(function (item) { return item[0] === key; })[0];
+        sheet.getRange(index + 2, 2, 1, 2).setValues([[fresh[1], fresh[2]]]);
+      }
+    });
+  }
+
+  const result = {};
+  readSheetAsText_(sheet).forEach(function (row) {
+    const key = String(row.kode || "").trim();
+
+    if (key && String(row.pesan || "").trim()) {
+      result[key] = String(row.pesan);
+    }
+  });
+
+  // Tambahkan baris bawaan yang belum ada.
+  const missing = DEFAULT_MESSAGES.filter(function (item) {
+    return !(item[0] in result);
+  });
+
+  if (missing.length) {
+    const existingKeys = readSheetAsText_(sheet).map(function (row) {
+      return String(row.kode || "").trim();
+    });
+    const toAppend = missing.filter(function (item) {
+      return existingKeys.indexOf(item[0]) < 0;
+    });
+
+    if (toAppend.length) {
+      sheet.getRange(sheet.getLastRow() + 1, 1, toAppend.length, 3).setValues(toAppend);
+    }
+
+    missing.forEach(function (item) {
+      result[item[0]] = item[1];
+    });
+  }
+
+  messageCache_ = result;
+  return result;
+}
+
+function msg_(spreadsheet, key, vars) {
+  const template = getMessages_(spreadsheet)[key] || key;
+  return fillTemplate_(template, vars || {});
+}
+
+function fillTemplate_(template, vars) {
+  return String(template).replace(/\{(\w+)\}/g, function (match, name) {
+    return name in vars ? String(vars[name]) : match;
   });
 }
 
