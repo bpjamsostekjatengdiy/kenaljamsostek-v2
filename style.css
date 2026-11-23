@@ -1717,7 +1717,7 @@ legend {
 }
 
 /* Mode quiz aman: teks soal tidak bisa diseleksi, timer per butir */
-#quiz-panel {
+#quiz-panel.secure {
   -webkit-user-select: none;
   user-select: none;
   -webkit-touch-callout: none;

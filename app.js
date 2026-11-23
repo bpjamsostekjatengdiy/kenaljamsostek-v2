@@ -1,7 +1,10 @@
 // Soal, kunci, skor, dan durasi resmi ditangani Apps Script.
 // Browser hanya menerima SATU soal aktif, tanpa kunci jawaban.
-// Teks soal digambar di <canvas>, sehingga tidak ada teks soal di DOM
-// yang bisa dibaca atau disalin oleh ekstensi AI.
+// Mode anti_curang diatur per sesi di sheet sesi_aktif:
+// - ENABLE : teks soal digambar di <canvas>, salin/klik kanan diblokir dengan peringatan,
+//            keluar layar dicatat, dan ekstensi browser dideteksi SELAMA PENGERJAAN.
+//            Halaman registrasi tidak diblokir, supaya data peserta tetap masuk.
+// - DISABLE: teks soal biasa, salin diperbolehkan, tanpa deteksi ekstensi.
 const RESPONSE_ENDPOINT_URL =
   "https://script.google.com/macros/s/AKfycbx6sdk5STv5suSDGFjXeJUd8HmnRPco1VPiYJDEZtIsuIdikB7z6CRGcsjplHBHuyEHPg/exec";
 const MAX_FOCUS_LOST = 2;
@@ -16,12 +19,17 @@ const state = {
   isQuizActive: false,
   isSending: false,
   isAway: false,
+  antiCheat: true,
   focusLostCount: 0,
+  copyAttempts: 0,
   extensionDetected: false,
   sessionClosed: false,
   sessionTitle: "",
-  questionTimerId: null,
-  questionDeadline: 0,
+  quizStartedAt: 0,
+  elapsedTimerId: null,
+  extensionObserver: null,
+  extensionScanId: null,
+  warningTimeoutId: null,
 };
 
 const elements = {
@@ -38,6 +46,7 @@ const elements = {
   startButton: document.querySelector("#start-button"),
   bankStatus: document.querySelector("#bank-status"),
   quizPanel: document.querySelector("#quiz-panel"),
+  quizRule: document.querySelector(".quiz-rule"),
   resultPanel: document.querySelector("#result-panel"),
   quizForm: document.querySelector("#quiz-form"),
   questionCount: document.querySelector("#question-count"),
@@ -60,7 +69,6 @@ window.addEventListener("DOMContentLoaded", () => {
   renderSessionHeading();
   loadThemes();
   loadSessionTitle();
-  startExtensionWatch();
 });
 
 elements.participantForm.addEventListener("submit", async (event) => {
@@ -68,13 +76,6 @@ elements.participantForm.addEventListener("submit", async (event) => {
 
   if (!state.isQuestionBankLoaded) {
     showMessage("Tema masih dimuat. Coba lagi sebentar.");
-    return;
-  }
-
-  scanForExtensions();
-
-  if (state.extensionDetected) {
-    showExtensionBlock();
     return;
   }
 
@@ -96,7 +97,6 @@ elements.participantForm.addEventListener("submit", async (event) => {
       participant: state.participant,
       testSession: state.participant.testSession,
       testTheme: state.participant.testTheme,
-      extensionDetected: state.extensionDetected,
     });
 
     if (!result.ok) {
@@ -104,14 +104,7 @@ elements.participantForm.addEventListener("submit", async (event) => {
       return;
     }
 
-    state.attemptId = result.attemptId;
-    state.focusLostCount = 0;
-    state.isAway = false;
-    state.isQuizActive = true;
-    elements.participantPanel.classList.add("hidden");
-    elements.resultPanel.classList.add("hidden");
-    elements.quizPanel.classList.remove("hidden");
-    showQuestion(result);
+    enterQuiz(result);
   } catch (error) {
     showMessage("Koneksi bermasalah. Coba lagi.");
   } finally {
@@ -138,25 +131,58 @@ elements.closeButton.addEventListener("click", () => {
   showMessage("Halaman ini bisa ditutup.");
 });
 
-// Catat setiap kali peserta meninggalkan halaman quiz:
+// Catat setiap kali peserta meninggalkan halaman quiz (hanya mode ENABLE):
 // pindah aplikasi/tab, membuka side panel AI, atau overlay asisten.
 document.addEventListener("visibilitychange", () => (document.hidden ? markAway() : markBack()));
 window.addEventListener("blur", markAway);
 window.addEventListener("focus", markBack);
 
-// Penghambat salin, seleksi, dan klik kanan di area quiz.
-["copy", "cut", "contextmenu", "selectstart", "dragstart"].forEach((type) => {
-  elements.quizPanel.addEventListener(type, (event) => event.preventDefault());
+// Blokir salin, potong, dan klik kanan di area quiz (hanya mode ENABLE), dengan peringatan.
+["copy", "cut", "contextmenu"].forEach((type) => {
+  document.addEventListener(type, (event) => {
+    if (!isSecureQuiz()) {
+      return;
+    }
+
+    event.preventDefault();
+    warnCopyAttempt();
+  });
+});
+
+["selectstart", "dragstart"].forEach((type) => {
+  document.addEventListener(type, (event) => {
+    if (isSecureQuiz()) {
+      event.preventDefault();
+    }
+  });
+});
+
+document.addEventListener("keydown", (event) => {
+  if (!isSecureQuiz()) {
+    return;
+  }
+
+  const key = String(event.key || "").toLowerCase();
+  const withModifier = event.ctrlKey || event.metaKey;
+
+  if ((withModifier && ["c", "x", "a", "p", "s", "u"].includes(key)) || key === "printscreen") {
+    event.preventDefault();
+    warnCopyAttempt();
+  }
 });
 
 window.addEventListener("resize", () => {
-  if (state.question && state.isQuizActive) {
+  if (state.question && state.isQuizActive && state.antiCheat) {
     drawQuestion(state.question, true);
   }
 });
 
+function isSecureQuiz() {
+  return state.isQuizActive && state.antiCheat;
+}
+
 function markAway() {
-  if (!state.isQuizActive || state.isAway) {
+  if (!isSecureQuiz() || state.isAway) {
     return;
   }
 
@@ -170,14 +196,41 @@ function markBack() {
   }
 
   state.isAway = false;
-  showMessage(
-    `Peringatan: Anda keluar dari halaman quiz ${state.focusLostCount}x. ` +
+  showWarning(
+    `⚠ Anda keluar dari halaman quiz ${state.focusLostCount}x. ` +
       `Lebih dari ${MAX_FOCUS_LOST}x tidak masuk peringkat.`,
   );
 }
 
+function warnCopyAttempt() {
+  state.copyAttempts += 1;
+  showWarning(`⚠ Menyalin soal tidak diizinkan. Percobaan tercatat (${state.copyAttempts}x).`);
+}
+
+// Peringatan tebal dan disorot, hilang sendiri setelah beberapa detik.
+function showWarning(text) {
+  window.clearTimeout(showMessage.timeout);
+  window.clearTimeout(state.warningTimeoutId);
+  elements.message.textContent = text;
+  elements.message.classList.add("alert-extension");
+  elements.message.classList.remove("hidden");
+  state.warningTimeoutId = window.setTimeout(() => {
+    elements.message.classList.add("hidden");
+    elements.message.classList.remove("alert-extension");
+  }, 5000);
+}
+
+// Peringatan tetap (tidak hilang otomatis).
+function showAlertMessage(text) {
+  window.clearTimeout(showMessage.timeout);
+  window.clearTimeout(state.warningTimeoutId);
+  elements.message.textContent = text;
+  elements.message.classList.add("alert-extension");
+  elements.message.classList.remove("hidden");
+}
+
 // --------------------------------------------------------------------
-// Deteksi ekstensi browser
+// Deteksi ekstensi browser (hanya mode ENABLE, hanya selama pengerjaan)
 // Ekstensi AI (ChatGPT sidebar, Monica, Sider, Merlin, MaxAI, quiz solver, dll.)
 // umumnya menyisipkan tombol/panel ke halaman. Halaman ini hanya berisi
 // <main class="shell"> dan <script>, jadi elemen lain dianggap sisipan ekstensi.
@@ -186,8 +239,8 @@ function markBack() {
 const EXTENSION_URL_PATTERN = /^(chrome|moz|safari-web|ms-browser|edge)-extension:\/\//i;
 
 function startExtensionWatch() {
-  scanForExtensions();
-  const observer = new MutationObserver((mutations) => {
+  stopExtensionWatch();
+  state.extensionObserver = new MutationObserver((mutations) => {
     for (const mutation of mutations) {
       for (const node of mutation.addedNodes) {
         if (node.nodeType === Node.ELEMENT_NODE && isForeignElement(node)) {
@@ -197,8 +250,21 @@ function startExtensionWatch() {
       }
     }
   });
-  observer.observe(document.documentElement, { childList: true, subtree: true });
-  window.setInterval(scanForExtensions, 2000);
+  state.extensionObserver.observe(document.documentElement, { childList: true, subtree: true });
+  state.extensionScanId = window.setInterval(scanForExtensions, 2000);
+  scanForExtensions();
+}
+
+function stopExtensionWatch() {
+  if (state.extensionObserver) {
+    state.extensionObserver.disconnect();
+    state.extensionObserver = null;
+  }
+
+  if (state.extensionScanId) {
+    window.clearInterval(state.extensionScanId);
+    state.extensionScanId = null;
+  }
 }
 
 function scanForExtensions() {
@@ -242,25 +308,19 @@ function hasCustomElements() {
 }
 
 function flagExtension() {
-  if (state.extensionDetected) {
+  if (!isSecureQuiz() || state.extensionDetected) {
     return;
   }
 
   state.extensionDetected = true;
-
-  if (!state.isQuizActive) {
-    showExtensionBlock();
-    return;
-  }
-
   abortQuiz();
 }
 
-// Ekstensi muncul di tengah pengerjaan: pengerjaan langsung dihentikan.
-// Sisa soal dianggap kosong dan hasil ditandai EKSTENSI di server.
+// Ekstensi terdeteksi saat pengerjaan: pengerjaan langsung dihentikan.
+// Sisa soal dianggap kosong dan hasil ditandai EKSTENSI di server, jadi data peserta tetap tercatat.
 async function abortQuiz() {
   state.isQuizActive = false;
-  stopQuestionTimer();
+  stopQuizTimers();
   elements.quizPanel.classList.add("hidden");
   showAlertMessage("⚠ EKSTENSI BROWSER TERDETEKSI. Pengerjaan dihentikan.");
 
@@ -275,6 +335,7 @@ async function abortQuiz() {
         answer: "",
         abort: true,
         focusLostCount: state.focusLostCount,
+        copyAttempts: state.copyAttempts,
         extensionDetected: true,
       });
     } catch (error) {
@@ -298,27 +359,8 @@ async function abortQuiz() {
   elements.resultPanel.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-function showExtensionBlock() {
-  elements.startButton.disabled = true;
-  elements.bankStatus.classList.add("alert-extension");
-  elements.bankStatus.setAttribute("role", "alert");
-  elements.bankStatus.innerHTML =
-    "<strong>⚠ EKSTENSI BROWSER TERDETEKSI</strong>" +
-    "<span>Matikan semua ekstensi (termasuk asisten AI), " +
-    "atau buka link ini di browser HP biasa, lalu muat ulang halaman.</span>";
-  elements.bankStatus.scrollIntoView({ behavior: "smooth", block: "center" });
-}
-
-// Peringatan tetap (tidak hilang otomatis) saat ekstensi terdeteksi di tengah pengerjaan.
-function showAlertMessage(text) {
-  window.clearTimeout(showMessage.timeout);
-  elements.message.textContent = text;
-  elements.message.classList.add("alert-extension");
-  elements.message.classList.remove("hidden");
-}
-
 // --------------------------------------------------------------------
-// Alur soal: satu soal per permintaan ke server
+// Alur soal: satu soal per permintaan ke server, tanpa batas waktu per soal
 // --------------------------------------------------------------------
 
 async function postJson(payload) {
@@ -349,7 +391,8 @@ async function loadThemes() {
     // Sesi dibuka/ditutup hanya dari sheet sesi_aktif di spreadsheet.
     const sessions = payload.sessions || {};
     const sessionKey = String(elements.testSession.value || "").toLowerCase();
-    state.sessionClosed = sessions[sessionKey] !== true;
+    const config = sessions[sessionKey];
+    state.sessionClosed = !(config === true || (config && config.open === true));
 
     elements.testTheme.disabled = themes.length === 0;
     state.isQuestionBankLoaded = themes.length > 0 && !state.sessionClosed;
@@ -365,9 +408,35 @@ async function loadThemes() {
   } finally {
     setLoading(false);
   }
+}
 
-  if (state.extensionDetected) {
-    showExtensionBlock();
+function enterQuiz(result) {
+  state.attemptId = result.attemptId;
+  state.antiCheat = result.antiCheat !== false;
+  state.focusLostCount = 0;
+  state.copyAttempts = 0;
+  state.extensionDetected = false;
+  state.isAway = false;
+  state.isQuizActive = true;
+
+  elements.participantPanel.classList.add("hidden");
+  elements.resultPanel.classList.add("hidden");
+  elements.quizPanel.classList.remove("hidden");
+  elements.quizPanel.classList.toggle("secure", state.antiCheat);
+
+  if (elements.quizRule) {
+    elements.quizRule.textContent = state.antiCheat
+      ? "Butir tidak bisa diulang. Jangan keluar dari halaman ini. " +
+        "Menyalin soal dan ekstensi browser (termasuk asisten AI) tidak diizinkan."
+      : "Butir tidak bisa diulang.";
+  }
+
+  startElapsedTimer(Number(result.elapsedSeconds) || 0);
+  showQuestion(result);
+
+  // Deteksi kecurangan baru aktif di sini, setelah data registrasi masuk.
+  if (state.antiCheat) {
+    startExtensionWatch();
   }
 }
 
@@ -383,8 +452,11 @@ function showQuestion(result) {
   elements.nextButton.textContent = isLast ? "Kirim Jawaban" : "Lanjut";
   elements.nextButton.disabled = false;
 
+  if (Number.isFinite(Number(result.elapsedSeconds))) {
+    state.quizStartedAt = Date.now() - Number(result.elapsedSeconds) * 1000;
+  }
+
   drawQuestion(result.question);
-  startQuestionTimer(Number(result.secondsLeft));
 }
 
 function drawQuestion(question, keepSelection = false) {
@@ -392,9 +464,14 @@ function drawQuestion(question, keepSelection = false) {
   const textColor = getComputedStyle(elements.quizPanel).color || "#1f2937";
   const legendWidth = elements.questionText.parentElement.clientWidth || 320;
 
-  elements.questionText.replaceChildren(
-    createTextCanvas(question.text, { width: legendWidth, fontSize: 18, fontWeight: 600, color: textColor }),
-  );
+  if (state.antiCheat) {
+    elements.questionText.replaceChildren(
+      createTextCanvas(question.text, { width: legendWidth, fontSize: 18, fontWeight: 600, color: textColor }),
+    );
+  } else {
+    elements.questionText.textContent = question.text;
+  }
+
   elements.answerOptions.innerHTML = "";
 
   question.options.forEach((option) => {
@@ -414,11 +491,18 @@ function drawQuestion(question, keepSelection = false) {
     label.append(input, letter);
     elements.answerOptions.append(label);
 
-    const available = Math.max(
-      140,
-      label.clientWidth - 28 - input.offsetWidth - letter.offsetWidth - 24,
-    );
-    label.append(createTextCanvas(option.text, { width: available, fontSize: 16, color: textColor }));
+    if (state.antiCheat) {
+      const available = Math.max(
+        140,
+        label.clientWidth - 28 - input.offsetWidth - letter.offsetWidth - 24,
+      );
+      label.append(createTextCanvas(option.text, { width: available, fontSize: 16, color: textColor }));
+    } else {
+      const text = document.createElement("span");
+      text.className = "option-text";
+      text.textContent = option.text;
+      label.append(text);
+    }
   });
 }
 
@@ -463,39 +547,38 @@ function createTextCanvas(text, { width, fontSize, fontWeight = 400, color }) {
   return canvas;
 }
 
-// Batas waktu per soal. Habis waktu = jawaban terpilih (atau kosong) dikirim otomatis.
-function startQuestionTimer(secondsLeft) {
-  stopQuestionTimer();
-  const seconds = Number.isFinite(secondsLeft) ? secondsLeft : 25;
-  state.questionDeadline = Date.now() + seconds * 1000;
-  updateQuestionTimer();
-  state.questionTimerId = window.setInterval(updateQuestionTimer, 250);
+// Hitung maju total lama pengerjaan seluruh soal. Durasi resmi tetap dihitung server.
+function startElapsedTimer(elapsedSeconds) {
+  stopElapsedTimer();
+  state.quizStartedAt = Date.now() - elapsedSeconds * 1000;
+  updateElapsedTimer();
+  state.elapsedTimerId = window.setInterval(updateElapsedTimer, 500);
 }
 
-function updateQuestionTimer() {
-  const remaining = Math.max(0, Math.ceil((state.questionDeadline - Date.now()) / 1000));
-  elements.timerDisplay.textContent = formatClock(remaining);
-  elements.timerDisplay.classList.toggle("timer-warning", remaining <= 5);
+function updateElapsedTimer() {
+  const elapsed = Math.max(0, Math.floor((Date.now() - state.quizStartedAt) / 1000));
+  elements.timerDisplay.textContent = formatClock(elapsed);
+}
 
-  if (remaining === 0) {
-    sendAnswer(new FormData(elements.quizForm).get("answer") || "");
+function stopElapsedTimer() {
+  if (state.elapsedTimerId) {
+    window.clearInterval(state.elapsedTimerId);
+    state.elapsedTimerId = null;
   }
 }
 
-function stopQuestionTimer() {
-  if (state.questionTimerId) {
-    window.clearInterval(state.questionTimerId);
-    state.questionTimerId = null;
-  }
+function stopQuizTimers() {
+  stopElapsedTimer();
+  stopExtensionWatch();
+  elements.quizPanel.classList.remove("secure");
 }
 
 async function sendAnswer(answer) {
-  if (!state.isQuizActive || state.isSending) {
+  if (!state.isQuizActive || state.isSending || !answer) {
     return;
   }
 
   state.isSending = true;
-  stopQuestionTimer();
   elements.nextButton.disabled = true;
   elements.nextButton.textContent = "Mengirim...";
   elements.answerOptions.querySelectorAll("input").forEach((input) => {
@@ -508,6 +591,7 @@ async function sendAnswer(answer) {
     index: state.questionIndex,
     answer,
     focusLostCount: state.focusLostCount,
+    copyAttempts: state.copyAttempts,
     extensionDetected: state.extensionDetected,
   };
 
@@ -515,8 +599,21 @@ async function sendAnswer(answer) {
     try {
       const result = await postJson(payload);
 
+      if (!result.ok && result.retry) {
+        state.isSending = false;
+        elements.nextButton.disabled = false;
+        elements.nextButton.textContent =
+          state.questionIndex === state.totalQuestions - 1 ? "Kirim Jawaban" : "Lanjut";
+        elements.answerOptions.querySelectorAll("input").forEach((input) => {
+          input.disabled = false;
+        });
+        showMessage(result.message || "Coba lagi.");
+        return;
+      }
+
       if (!result.ok) {
         state.isQuizActive = false;
+        stopQuizTimers();
         showResultError(result.message || "Jawaban belum tersimpan.");
         return;
       }
@@ -535,18 +632,21 @@ async function sendAnswer(answer) {
   }
 
   state.isQuizActive = false;
+  stopQuizTimers();
   showResultError("Jawaban belum terkirim. Muat ulang halaman dan isi data yang sama untuk melanjutkan.");
 }
 
 function showResult(result) {
   state.isQuizActive = false;
   state.question = null;
+  stopQuizTimers();
   elements.quizPanel.classList.add("hidden");
   elements.resultPanel.classList.remove("hidden");
   elements.resultTitle.textContent = `${result.score} poin`;
   elements.resultSummary.textContent =
     `${result.correct} dari ${result.totalQuestions} tanggapan sesuai acuan.`;
   elements.durationSummary.textContent = `Lama pengerjaan: ${result.durationText}.`;
+  elements.submitStatus.classList.remove("alert-extension");
   elements.submitStatus.textContent =
     "Jawaban tersimpan. Kunci dan pembahasan dibagikan setelah sesi ditutup.";
   elements.reviewList.innerHTML = "";
@@ -555,6 +655,7 @@ function showResult(result) {
 
 function showResultError(message) {
   state.question = null;
+  stopQuizTimers();
   elements.quizPanel.classList.add("hidden");
   elements.resultPanel.classList.remove("hidden");
   elements.resultTitle.textContent = "Belum tersimpan";
@@ -581,7 +682,7 @@ function getThemeLabel(value) {
 }
 
 function setLoading(isLoading, text = "Memuat...") {
-  elements.startButton.disabled = isLoading || state.extensionDetected || state.sessionClosed;
+  elements.startButton.disabled = isLoading || state.sessionClosed;
   elements.startButton.textContent = isLoading ? text : "Yuk Mulai";
 }
 
@@ -679,6 +780,8 @@ function showMessage(text) {
     return;
   }
 
+  window.clearTimeout(state.warningTimeoutId);
+  elements.message.classList.remove("alert-extension");
   elements.message.textContent = text;
   elements.message.classList.remove("hidden");
   window.clearTimeout(showMessage.timeout);
