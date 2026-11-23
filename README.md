@@ -12,7 +12,9 @@ Aplikasi web statis untuk pretest (`index.html`, sesi `Absensi`) dan posttest (`
 - Mode `anti_curang` per sesi (sheet `sesi_aktif`):
   - `ENABLE`: teks soal digambar di `<canvas>`, salin/klik kanan diblokir dengan peringatan (dicatat di `percobaan_salin`), keluar layar dicatat di `keluar_layar`, dan ekstensi browser dideteksi **selama pengerjaan**. Halaman registrasi tidak diblokir, supaya data peserta tetap masuk. Ekstensi terdeteksi = pengerjaan dihentikan dan hasil ditandai `EKSTENSI`.
   - `DISABLE`: teks soal biasa, bisa disalin, ekstensi tidak dideteksi.
-- Jumlah kesempatan per nomor WA per hari per tema diatur di kolom `maks_percobaan`. Jatah terpakai sejak klik mulai.
+- Jumlah kesempatan per nomor WA per hari per tema diatur di kolom `maks_percobaan`. Jatah terpakai sejak klik mulai dan dihitung dari sheet `log_mulai`. Hapus baris peserta di `log_mulai` untuk mengembalikan jatahnya.
+- `tampil_pembahasan` (YA/TIDAK): pembahasan tiap butir tampil setelah selesai. Kosong = YA untuk Absensi, TIDAK untuk Feedback.
+- Semua pesan ke peserta diambil dari sheet `pesan` (kode | pesan | keterangan). Ubah kolom `pesan`, jangan ubah `kode`. `{sesi}`, `{terpakai}`, `{maks}`, `{jumlah}`, `{batas}` diganti otomatis.
 - Baris dengan `catatan` (`KELUAR_LAYAR`, `EKSTENSI`, `TERLALU_CEPAT`) tidak masuk leaderboard.
 
 ## Spreadsheet
@@ -41,7 +43,7 @@ Tab `sesi_aktif` (satu-satunya pengendali sesi; semua kolom memakai dropdown):
 - `maks_percobaan`: `1`, `2`, `3`, `4`, `5`, `10`, atau `TANPA BATAS`. Kosong = `1`.
 - Kolom `anti_curang` dan `maks_percobaan` beserta dropdown-nya dibuat otomatis oleh Apps Script bila belum ada.
 
-Tab `jawaban` dibuat otomatis oleh Apps Script.
+Tab `jawaban`, `log_mulai`, dan `pesan` dibuat otomatis oleh Apps Script.
 
 ## Apps Script
 

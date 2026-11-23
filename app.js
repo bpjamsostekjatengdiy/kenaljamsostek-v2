@@ -9,6 +9,34 @@ const RESPONSE_ENDPOINT_URL =
   "https://script.google.com/macros/s/AKfycbx6sdk5STv5suSDGFjXeJUd8HmnRPco1VPiYJDEZtIsuIdikB7z6CRGcsjplHBHuyEHPg/exec";
 const MAX_FOCUS_LOST = 2;
 
+// Teks bawaan. Bisa diganti dari sheet "pesan" di spreadsheet (kolom kode | pesan).
+const DEFAULT_MESSAGES = {
+  tema_belum_aktif: "Belum ada tema aktif.",
+  tema_gagal_dimuat: "Tema belum bisa dimuat.",
+  sesi_tutup: "Sesi {sesi} belum dibuka atau sudah ditutup.",
+  koneksi_bermasalah: "Koneksi bermasalah. Coba lagi.",
+  pilih_jawaban: "Pilih satu tanggapan dulu.",
+  aturan_enable:
+    "Butir tidak bisa diulang. Jangan keluar dari halaman ini. " +
+    "Menyalin soal dan ekstensi browser (termasuk asisten AI) tidak diizinkan.",
+  aturan_disable: "Butir tidak bisa diulang.",
+  peringatan_salin: "⚠ Menyalin soal tidak diizinkan. Percobaan tercatat ({jumlah}x).",
+  peringatan_keluar_layar: "⚠ Anda keluar dari halaman quiz {jumlah}x. Lebih dari {batas}x tidak masuk peringkat.",
+  ekstensi_terdeteksi: "⚠ EKSTENSI BROWSER TERDETEKSI. Pengerjaan dihentikan.",
+  pengerjaan_dihentikan_judul: "⚠ PENGERJAAN DIHENTIKAN",
+  pengerjaan_dihentikan_isi:
+    "Ekstensi browser terdeteksi saat mengerjakan. Sisa soal dianggap kosong " +
+    "dan hasil Anda tidak masuk peringkat.",
+  hasil_dengan_pembahasan: "Jawaban tersimpan. Pembahasan tiap butir ada di bawah.",
+  hasil_tanpa_pembahasan: "Jawaban tersimpan. Kunci dan pembahasan dibagikan setelah sesi ditutup.",
+  jawaban_gagal_terkirim: "Jawaban belum terkirim. Muat ulang halaman dan isi data yang sama untuk melanjutkan.",
+};
+
+function t(key, vars = {}) {
+  const template = (state.messages && state.messages[key]) || DEFAULT_MESSAGES[key] || key;
+  return String(template).replace(/\{(\w+)\}/g, (match, name) => (name in vars ? String(vars[name]) : match));
+}
+
 const state = {
   question: null,
   questionIndex: 0,
@@ -30,6 +58,7 @@ const state = {
   extensionObserver: null,
   extensionScanId: null,
   warningTimeoutId: null,
+  messages: {},
 };
 
 const elements = {
@@ -106,7 +135,7 @@ elements.participantForm.addEventListener("submit", async (event) => {
 
     enterQuiz(result);
   } catch (error) {
-    showMessage("Koneksi bermasalah. Coba lagi.");
+    showMessage(t("koneksi_bermasalah"));
   } finally {
     setLoading(false);
   }
@@ -119,7 +148,7 @@ elements.quizForm.addEventListener("submit", (event) => {
   const selected = new FormData(elements.quizForm).get("answer");
 
   if (!selected) {
-    showMessage("Pilih satu tanggapan dulu.");
+    showMessage(t("pilih_jawaban"));
     return;
   }
 
@@ -196,15 +225,12 @@ function markBack() {
   }
 
   state.isAway = false;
-  showWarning(
-    `⚠ Anda keluar dari halaman quiz ${state.focusLostCount}x. ` +
-      `Lebih dari ${MAX_FOCUS_LOST}x tidak masuk peringkat.`,
-  );
+  showWarning(t("peringatan_keluar_layar", { jumlah: state.focusLostCount, batas: MAX_FOCUS_LOST }));
 }
 
 function warnCopyAttempt() {
   state.copyAttempts += 1;
-  showWarning(`⚠ Menyalin soal tidak diizinkan. Percobaan tercatat (${state.copyAttempts}x).`);
+  showWarning(t("peringatan_salin", { jumlah: state.copyAttempts }));
 }
 
 // Peringatan tebal dan disorot, hilang sendiri setelah beberapa detik.
@@ -322,7 +348,7 @@ async function abortQuiz() {
   state.isQuizActive = false;
   stopQuizTimers();
   elements.quizPanel.classList.add("hidden");
-  showAlertMessage("⚠ EKSTENSI BROWSER TERDETEKSI. Pengerjaan dihentikan.");
+  showAlertMessage(t("ekstensi_terdeteksi"));
 
   let result = null;
 
@@ -351,9 +377,8 @@ async function abortQuiz() {
 
   elements.submitStatus.classList.add("alert-extension");
   elements.submitStatus.innerHTML =
-    "<strong>⚠ PENGERJAAN DIHENTIKAN</strong>" +
-    "<span>Ekstensi browser terdeteksi saat mengerjakan. Sisa soal dianggap kosong " +
-    "dan hasil Anda tidak masuk peringkat.</span>";
+    `<strong>${escapeHtml(t("pengerjaan_dihentikan_judul"))}</strong>` +
+    `<span>${escapeHtml(t("pengerjaan_dihentikan_isi"))}</span>`;
   elements.message.classList.add("hidden");
   elements.message.classList.remove("alert-extension");
   elements.resultPanel.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -379,6 +404,7 @@ async function loadThemes() {
     const response = await fetch(`${RESPONSE_ENDPOINT_URL}?action=themes`);
     const payload = await response.json();
     const themes = Array.isArray(payload.themes) ? payload.themes : [];
+    state.messages = payload.messages || {};
 
     elements.testTheme.innerHTML = "";
     themes.forEach((theme) => {
@@ -397,14 +423,14 @@ async function loadThemes() {
     elements.testTheme.disabled = themes.length === 0;
     state.isQuestionBankLoaded = themes.length > 0 && !state.sessionClosed;
     elements.bankStatus.textContent = state.sessionClosed
-      ? `Sesi ${elements.testSession.value} belum dibuka atau sudah ditutup.`
+      ? t("sesi_tutup", { sesi: elements.testSession.value })
       : themes.length
         ? ""
-        : "Belum ada tema aktif.";
+        : t("tema_belum_aktif");
     updateActiveModuleLabel();
   } catch (error) {
     state.isQuestionBankLoaded = false;
-    elements.bankStatus.textContent = "Tema belum bisa dimuat.";
+    elements.bankStatus.textContent = t("tema_gagal_dimuat");
   } finally {
     setLoading(false);
   }
@@ -425,10 +451,7 @@ function enterQuiz(result) {
   elements.quizPanel.classList.toggle("secure", state.antiCheat);
 
   if (elements.quizRule) {
-    elements.quizRule.textContent = state.antiCheat
-      ? "Butir tidak bisa diulang. Jangan keluar dari halaman ini. " +
-        "Menyalin soal dan ekstensi browser (termasuk asisten AI) tidak diizinkan."
-      : "Butir tidak bisa diulang.";
+    elements.quizRule.textContent = state.antiCheat ? t("aturan_enable") : t("aturan_disable");
   }
 
   startElapsedTimer(Number(result.elapsedSeconds) || 0);
@@ -607,7 +630,7 @@ async function sendAnswer(answer) {
         elements.answerOptions.querySelectorAll("input").forEach((input) => {
           input.disabled = false;
         });
-        showMessage(result.message || "Coba lagi.");
+        showMessage(result.message || t("pilih_jawaban"));
         return;
       }
 
@@ -633,7 +656,7 @@ async function sendAnswer(answer) {
 
   state.isQuizActive = false;
   stopQuizTimers();
-  showResultError("Jawaban belum terkirim. Muat ulang halaman dan isi data yang sama untuk melanjutkan.");
+  showResultError(t("jawaban_gagal_terkirim"));
 }
 
 function showResult(result) {
@@ -648,9 +671,7 @@ function showResult(result) {
   elements.durationSummary.textContent = `Lama pengerjaan: ${result.durationText}.`;
   elements.submitStatus.classList.remove("alert-extension");
   const review = Array.isArray(result.review) ? result.review : [];
-  elements.submitStatus.textContent = review.length
-    ? "Jawaban tersimpan. Pembahasan tiap butir ada di bawah."
-    : "Jawaban tersimpan. Kunci dan pembahasan dibagikan setelah sesi ditutup.";
+  elements.submitStatus.textContent = review.length ? t("hasil_dengan_pembahasan") : t("hasil_tanpa_pembahasan");
   renderReview(review);
   renderParticipantSummary();
 }
