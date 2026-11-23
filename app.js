@@ -389,7 +389,7 @@ async function loadThemes() {
     });
 
     // Sesi dibuka/ditutup hanya dari sheet sesi_aktif di spreadsheet.
-    const sessions = payload.sessions || {};
+    const sessions = payload.sessionConfigs || payload.sessions || {};
     const sessionKey = String(elements.testSession.value || "").toLowerCase();
     const config = sessions[sessionKey];
     state.sessionClosed = !(config === true || (config && config.open === true));
@@ -647,10 +647,29 @@ function showResult(result) {
     `${result.correct} dari ${result.totalQuestions} tanggapan sesuai acuan.`;
   elements.durationSummary.textContent = `Lama pengerjaan: ${result.durationText}.`;
   elements.submitStatus.classList.remove("alert-extension");
-  elements.submitStatus.textContent =
-    "Jawaban tersimpan. Kunci dan pembahasan dibagikan setelah sesi ditutup.";
-  elements.reviewList.innerHTML = "";
+  const review = Array.isArray(result.review) ? result.review : [];
+  elements.submitStatus.textContent = review.length
+    ? "Jawaban tersimpan. Pembahasan tiap butir ada di bawah."
+    : "Jawaban tersimpan. Kunci dan pembahasan dibagikan setelah sesi ditutup.";
+  renderReview(review);
   renderParticipantSummary();
+}
+
+// Pembahasan dikirim server hanya bila tampil_pembahasan = YA di sheet sesi_aktif.
+function renderReview(review) {
+  elements.reviewList.innerHTML = "";
+
+  review.forEach((row) => {
+    const item = document.createElement("article");
+    item.className = `review-item${row.isCorrect ? "" : " wrong"}`;
+    item.innerHTML = `
+      <p class="review-question">${row.order}. ${escapeHtml(row.question)}</p>
+      <p class="review-meta">Pilihan Anda: ${escapeHtml(row.selectedAnswer || "-")} - ${escapeHtml(row.selectedAnswerText || "-")}</p>
+      <p class="review-meta">Acuan: ${escapeHtml(row.correctAnswer)} - ${escapeHtml(row.correctAnswerText || "-")}</p>
+      ${row.explanation ? `<p class="review-meta"><strong>Pembahasan:</strong> ${escapeHtml(row.explanation)}</p>` : ""}
+    `;
+    elements.reviewList.append(item);
+  });
 }
 
 function showResultError(message) {
