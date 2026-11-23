@@ -1781,3 +1781,9 @@ legend {
 @media (prefers-reduced-motion: reduce) {
   .alert-extension { animation: none; }
 }
+
+.alert-extension small {
+  font-weight: 400;
+  opacity: 0.8;
+  word-break: break-all;
+}

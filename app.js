@@ -7,7 +7,7 @@
 // - DISABLE: teks soal biasa, salin diperbolehkan, tanpa deteksi ekstensi.
 const RESPONSE_ENDPOINT_URL =
   "https://script.google.com/macros/s/AKfycbx6sdk5STv5suSDGFjXeJUd8HmnRPco1VPiYJDEZtIsuIdikB7z6CRGcsjplHBHuyEHPg/exec";
-const MAX_FOCUS_LOST = 2;
+const DEFAULT_MAX_FOCUS_LOST = 2; // dipakai bila server tidak mengirim batas_keluar_layar
 
 // Teks bawaan. Bisa diganti dari sheet "pesan" di spreadsheet (kolom kode | pesan).
 const DEFAULT_MESSAGES = {
@@ -21,7 +21,14 @@ const DEFAULT_MESSAGES = {
     "Menyalin soal dan ekstensi browser (termasuk asisten AI) tidak diizinkan.",
   aturan_disable: "Butir tidak bisa diulang.",
   peringatan_salin: "⚠ Menyalin soal tidak diizinkan. Percobaan tercatat ({jumlah}x).",
-  peringatan_keluar_layar: "⚠ Anda keluar dari halaman quiz {jumlah}x. Lebih dari {batas}x tidak masuk peringkat.",
+  peringatan_keluar_layar: "⚠ Anda keluar dari halaman quiz {jumlah}x. Keluar {batas}x, hasil tidak masuk peringkat.",
+  keluar_layar_melewati_batas: "⚠ Anda sudah keluar dari halaman quiz {jumlah}x. Hasil Anda tidak masuk peringkat.",
+  sumber_ekstensi: "Terdeteksi: {sumber}",
+  hasil_keluar_layar_judul: "⚠ TIDAK MASUK PERINGKAT",
+  hasil_keluar_layar:
+    "Anda keluar/pindah dari halaman quiz {jumlah}x (batas {batas}x). " +
+    "Hasil Anda tetap tersimpan, tetapi tidak masuk peringkat.",
+  hasil_terlalu_cepat: "Pengerjaan terlalu cepat sehingga hasil Anda tidak masuk peringkat.",
   ekstensi_terdeteksi: "⚠ EKSTENSI BROWSER TERDETEKSI. Pengerjaan dihentikan.",
   pengerjaan_dihentikan_judul: "⚠ PENGERJAAN DIHENTIKAN",
   pengerjaan_dihentikan_isi:
@@ -49,6 +56,8 @@ const state = {
   isAway: false,
   antiCheat: true,
   focusLostCount: 0,
+  maxFocusLost: DEFAULT_MAX_FOCUS_LOST,
+  extensionSource: "",
   copyAttempts: 0,
   extensionDetected: false,
   sessionClosed: false,
@@ -59,6 +68,8 @@ const state = {
   extensionScanId: null,
   warningTimeoutId: null,
   messages: {},
+  extensionAllowlist: [],
+  sessionConfig: null,
 };
 
 const elements = {
@@ -225,7 +236,17 @@ function markBack() {
   }
 
   state.isAway = false;
-  showWarning(t("peringatan_keluar_layar", { jumlah: state.focusLostCount, batas: MAX_FOCUS_LOST }));
+  // batas_keluar_layar 0 = tanpa batas: tetap dicatat, tanpa peringatan.
+  if (state.maxFocusLost <= 0) {
+    return;
+  }
+
+  const vars = { jumlah: state.focusLostCount, batas: state.maxFocusLost };
+  showWarning(
+    state.focusLostCount >= state.maxFocusLost
+      ? t("keluar_layar_melewati_batas", vars)
+      : t("peringatan_keluar_layar", vars),
+  );
 }
 
 function warnCopyAttempt() {
@@ -269,8 +290,8 @@ function startExtensionWatch() {
   state.extensionObserver = new MutationObserver((mutations) => {
     for (const mutation of mutations) {
       for (const node of mutation.addedNodes) {
-        if (node.nodeType === Node.ELEMENT_NODE && isForeignElement(node)) {
-          flagExtension();
+        if (node.nodeType === Node.ELEMENT_NODE && isSuspicious(node)) {
+          flagExtension(node);
           return;
         }
       }
@@ -301,9 +322,23 @@ function scanForExtensions() {
     ...document.querySelectorAll("iframe, script[src], link[href], embed, object"),
   ];
 
-  if (suspects.some(isForeignElement) || hasCustomElements()) {
-    flagExtension();
+  const foreign =
+    suspects.find(isSuspicious) ||
+    [...document.querySelectorAll("*")].find((element) => element.tagName.includes("-") && isSuspicious(element));
+
+  if (foreign) {
+    flagExtension(foreign);
   }
+}
+
+// Elemen sisipan yang cocok dengan sheet pengecualian_ekstensi tidak dianggap kecurangan.
+function isSuspicious(element) {
+  if (!isForeignElement(element)) {
+    return false;
+  }
+
+  const signature = describeElement(element).toLowerCase();
+  return !state.extensionAllowlist.some((pattern) => signature.includes(pattern));
 }
 
 function isForeignElement(element) {
@@ -329,16 +364,25 @@ function isForeignElement(element) {
   return tag === "iframe";
 }
 
-function hasCustomElements() {
-  return [...document.querySelectorAll("*")].some((element) => element.tagName.includes("-"));
+// Ringkasan elemen sisipan, dicatat di sheet supaya admin tahu ekstensi mana yang terdeteksi.
+function describeElement(element) {
+  if (!element || !element.tagName) {
+    return "-";
+  }
+
+  const id = element.id ? `#${element.id}` : "";
+  const classes = [...(element.classList || [])].slice(0, 3).map((name) => `.${name}`).join("");
+  const url = element.getAttribute("src") || element.getAttribute("href") || "";
+  return `${element.tagName.toLowerCase()}${id}${classes}${url ? ` [${url.slice(0, 80)}]` : ""}`.slice(0, 200);
 }
 
-function flagExtension() {
+function flagExtension(element) {
   if (!isSecureQuiz() || state.extensionDetected) {
     return;
   }
 
   state.extensionDetected = true;
+  state.extensionSource = describeElement(element);
   abortQuiz();
 }
 
@@ -363,6 +407,7 @@ async function abortQuiz() {
         focusLostCount: state.focusLostCount,
         copyAttempts: state.copyAttempts,
         extensionDetected: true,
+        extensionSource: state.extensionSource,
       });
     } catch (error) {
       await new Promise((resolve) => window.setTimeout(resolve, 1500 * attempt));
@@ -378,7 +423,8 @@ async function abortQuiz() {
   elements.submitStatus.classList.add("alert-extension");
   elements.submitStatus.innerHTML =
     `<strong>${escapeHtml(t("pengerjaan_dihentikan_judul"))}</strong>` +
-    `<span>${escapeHtml(t("pengerjaan_dihentikan_isi"))}</span>`;
+    `<span>${escapeHtml(t("pengerjaan_dihentikan_isi"))}</span>` +
+    `<small>${escapeHtml(t("sumber_ekstensi", { sumber: state.extensionSource }))}</small>`;
   elements.message.classList.add("hidden");
   elements.message.classList.remove("alert-extension");
   elements.resultPanel.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -405,6 +451,9 @@ async function loadThemes() {
     const payload = await response.json();
     const themes = Array.isArray(payload.themes) ? payload.themes : [];
     state.messages = payload.messages || {};
+    state.extensionAllowlist = Array.isArray(payload.extensionAllowlist)
+      ? payload.extensionAllowlist.map((pattern) => String(pattern).toLowerCase())
+      : [];
 
     elements.testTheme.innerHTML = "";
     themes.forEach((theme) => {
@@ -418,6 +467,7 @@ async function loadThemes() {
     const sessions = payload.sessionConfigs || payload.sessions || {};
     const sessionKey = String(elements.testSession.value || "").toLowerCase();
     const config = sessions[sessionKey];
+    state.sessionConfig = config && typeof config === "object" ? config : null;
     state.sessionClosed = !(config === true || (config && config.open === true));
 
     elements.testTheme.disabled = themes.length === 0;
@@ -442,6 +492,10 @@ function enterQuiz(result) {
   state.focusLostCount = 0;
   state.copyAttempts = 0;
   state.extensionDetected = false;
+  state.extensionSource = "";
+  const limitFromServer =
+    result.maxFocusLost !== undefined ? result.maxFocusLost : state.sessionConfig && state.sessionConfig.maxFocusLost;
+  state.maxFocusLost = Number.isFinite(Number(limitFromServer)) ? Number(limitFromServer) : DEFAULT_MAX_FOCUS_LOST;
   state.isAway = false;
   state.isQuizActive = true;
 
@@ -672,8 +726,42 @@ function showResult(result) {
   elements.submitStatus.classList.remove("alert-extension");
   const review = Array.isArray(result.review) ? result.review : [];
   elements.submitStatus.textContent = review.length ? t("hasil_dengan_pembahasan") : t("hasil_tanpa_pembahasan");
+  renderFlags(result);
   renderReview(review);
   renderParticipantSummary();
+}
+
+// Kotak peringatan di halaman hasil bila server menandai hasil tidak masuk peringkat.
+function renderFlags(result) {
+  const old = document.querySelector("#result-flags");
+
+  if (old) {
+    old.remove();
+  }
+
+  const flags = Array.isArray(result.flags) ? result.flags : [];
+  const lines = [];
+
+  if (flags.includes("KELUAR_LAYAR")) {
+    lines.push(t("hasil_keluar_layar", { jumlah: result.focusLost, batas: result.maxFocusLost }));
+  }
+
+  if (flags.includes("TERLALU_CEPAT")) {
+    lines.push(t("hasil_terlalu_cepat"));
+  }
+
+  if (!lines.length) {
+    return;
+  }
+
+  const box = document.createElement("div");
+  box.id = "result-flags";
+  box.className = "alert-extension";
+  box.setAttribute("role", "alert");
+  box.innerHTML =
+    `<strong>${escapeHtml(t("hasil_keluar_layar_judul"))}</strong>` +
+    lines.map((line) => `<span>${escapeHtml(line)}</span>`).join("");
+  elements.submitStatus.insertAdjacentElement("afterend", box);
 }
 
 // Pembahasan dikirim server hanya bila tampil_pembahasan = YA di sheet sesi_aktif.

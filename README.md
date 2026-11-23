@@ -13,6 +13,9 @@ Aplikasi web statis untuk pretest (`index.html`, sesi `Absensi`) dan posttest (`
   - `ENABLE`: teks soal digambar di `<canvas>`, salin/klik kanan diblokir dengan peringatan (dicatat di `percobaan_salin`), keluar layar dicatat di `keluar_layar`, dan ekstensi browser dideteksi **selama pengerjaan**. Halaman registrasi tidak diblokir, supaya data peserta tetap masuk. Ekstensi terdeteksi = pengerjaan dihentikan dan hasil ditandai `EKSTENSI`.
   - `DISABLE`: teks soal biasa, bisa disalin, ekstensi tidak dideteksi.
 - Jumlah kesempatan per nomor WA per hari per tema diatur di kolom `maks_percobaan`. Jatah terpakai sejak klik mulai dan dihitung dari sheet `log_mulai`. Hapus baris peserta di `log_mulai` untuk mengembalikan jatahnya.
+- `batas_keluar_layar`: keluar layar sebanyak ini atau lebih = tidak masuk peringkat (hanya saat ENABLE). Kosong = 2.
+- Ekstensi yang terdeteksi dicatat di kolom `deteksi_ekstensi` (sheet `jawaban`) dan status `log_mulai`. Elemen yang cocok dengan pola di sheet `pengecualian_ekstensi` (kolom `pola`) diabaikan.
+- Versi Apps Script yang aktif terlihat di `?action=themes` (field `version`).
 - `tampil_pembahasan` (YA/TIDAK): pembahasan tiap butir tampil setelah selesai. Kosong = YA untuk Absensi, TIDAK untuk Feedback.
 - Semua pesan ke peserta diambil dari sheet `pesan` (kode | pesan | keterangan). Ubah kolom `pesan`, jangan ubah `kode`. `{sesi}`, `{terpakai}`, `{maks}`, `{jumlah}`, `{batas}` diganti otomatis.
 - Baris dengan `catatan` (`KELUAR_LAYAR`, `EKSTENSI`, `TERLALU_CEPAT`) tidak masuk leaderboard.
