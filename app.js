@@ -30,6 +30,9 @@ const DEFAULT_MESSAGES = {
   peringatan_keluar_layar: "⚠ Anda keluar dari halaman quiz {jumlah}x. Keluar {batas}x, hasil tidak masuk peringkat.",
   keluar_layar_melewati_batas: "⚠ Anda sudah keluar dari halaman quiz {jumlah}x. Hasil Anda tidak masuk peringkat.",
   sumber_ekstensi: "Terdeteksi: {sumber}",
+  hasil_ekstensi_ai: "Anda terdeteksi menggunakan ekstensi AI {nama}.",
+  hasil_ekstensi_lain: "Anda terdeteksi menggunakan ekstensi {nama} ({kategori}).",
+  hasil_ekstensi_tidak_dikenal: "Terdeteksi ekstensi browser yang belum dikenal.",
   hasil_keluar_layar_judul: "⚠ TIDAK MASUK PERINGKAT",
   hasil_keluar_layar:
     "Anda keluar/pindah dari halaman quiz {jumlah}x (batas {batas}x). " +
@@ -75,6 +78,7 @@ const state = {
   warningTimeoutId: null,
   messages: {},
   extensionAllowlist: [],
+  extensionCatalog: [],
   sessionConfig: null,
 };
 
@@ -362,6 +366,30 @@ function scanForExtensions() {
 }
 
 // Elemen sisipan yang cocok dengan sheet pengecualian_ekstensi tidak dianggap kecurangan.
+// Nama ekstensi dari server (hasil akhir) atau dicocokkan dengan daftar pengecualian_ekstensi.
+function describeDetectedExtension(result) {
+  let name = result && result.extensionName;
+  let category = result && result.extensionCategory;
+  let isAi = result && result.extensionIsAi;
+
+  if (!name) {
+    const signature = String(state.extensionSource || "").toLowerCase();
+    const match = state.extensionCatalog.find((item) => item.pattern && signature.includes(item.pattern));
+
+    if (match) {
+      name = match.name;
+      category = match.category;
+      isAi = match.isAi;
+    }
+  }
+
+  if (!name) {
+    return t("hasil_ekstensi_tidak_dikenal");
+  }
+
+  return isAi ? t("hasil_ekstensi_ai", { nama: name }) : t("hasil_ekstensi_lain", { nama: name, kategori: category });
+}
+
 function isSuspicious(element) {
   if (!isForeignElement(element)) {
     return false;
@@ -454,6 +482,7 @@ async function abortQuiz() {
   elements.submitStatus.innerHTML =
     `<strong>${escapeHtml(t("pengerjaan_dihentikan_judul"))}</strong>` +
     `<span>${escapeHtml(t("pengerjaan_dihentikan_isi"))}</span>` +
+    `<span>${escapeHtml(describeDetectedExtension(result))}</span>` +
     `<small>${escapeHtml(t("sumber_ekstensi", { sumber: state.extensionSource }))}</small>`;
   elements.message.classList.add("hidden");
   elements.message.classList.remove("alert-extension");
@@ -481,6 +510,7 @@ async function loadThemes() {
     const payload = await response.json();
     const themes = Array.isArray(payload.themes) ? payload.themes : [];
     state.messages = payload.messages || {};
+    state.extensionCatalog = Array.isArray(payload.extensionCatalog) ? payload.extensionCatalog : [];
     state.extensionAllowlist = Array.isArray(payload.extensionAllowlist)
       ? payload.extensionAllowlist.map((pattern) => String(pattern).toLowerCase())
       : [];
