@@ -32,19 +32,20 @@ id_soal,nama_modul,program,sesi,pertanyaan,opsi_a,opsi_b,opsi_c,opsi_d,kunci,sta
 - `status`: hanya baris `AKTIF` yang dipakai.
 - `opsi_e` dan `pembahasan` opsional.
 
-Tab `sesi_aktif` (satu-satunya pengendali sesi; semua kolom memakai dropdown):
+Tab `sesi_aktif` (selalu tepat 2 baris; dirapikan otomatis oleh Apps Script):
 
-| sesi | status | tanggal | buka | tutup | anti_curang | maks_percobaan |
-|---|---|---|---|---|---|---|
-| Absensi | AKTIF | | | | ENABLE | 1 |
-| Feedback | AKTIF | | 10:00 | | ENABLE | 1 |
+| sesi | status | buka | tutup | anti_curang | maks_percobaan | tampil_pembahasan | batas_keluar_layar |
+|---|---|---|---|---|---|---|---|
+| Absensi | AKTIF | | | ENABLE | 1 | YA | 2 |
+| Feedback | AKTIF | 10:00 | | ENABLE | 1 | TIDAK | 2 |
 
-- `sesi`: `Absensi` = pretest, `Feedback` = posttest.
+- **Tanggal sesi diambil dari sheet `episode`** (kolom `Tanggal`). Sesi hanya terbuka bila hari ini tercantum di sana. Tambah baris episode = tambah hari sesi.
+- `sesi`: `Absensi` = pretest, `Feedback` = posttest. Tidak bisa ditambah baris.
 - `status`: `AKTIF` membuka sesi, selain itu tertutup.
-- `tanggal` (`yyyy-mm-dd`), `buka`, `tutup`: opsional. Bila diisi, ikut membatasi.
-- `anti_curang`: `ENABLE` atau `DISABLE`. Kosong = `ENABLE`.
-- `maks_percobaan`: `1`, `2`, `3`, `4`, `5`, `10`, atau `TANPA BATAS`. Kosong = `1`.
-- Kolom `anti_curang` dan `maks_percobaan` beserta dropdown-nya dibuat otomatis oleh Apps Script bila belum ada.
+- `buka`, `tutup`: opsional, jam per 30 menit.
+- `anti_curang`: `ENABLE` atau `DISABLE`.
+- `maks_percobaan`, `batas_keluar_layar`: `1`–`5`, `10`, atau `TANPA BATAS`.
+- `tampil_pembahasan`: `YA` atau `TIDAK`.
 
 Tab `jawaban`, `log_mulai`, dan `pesan` dibuat otomatis oleh Apps Script.
 

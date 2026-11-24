@@ -14,6 +14,7 @@ const DEFAULT_MESSAGES = {
   tema_belum_aktif: "Belum ada tema aktif.",
   tema_gagal_dimuat: "Tema belum bisa dimuat.",
   sesi_tutup: "Sesi {sesi} belum dibuka atau sudah ditutup.",
+  tidak_ada_episode: "Hari ini tidak ada jadwal Sesi DIJAMIN.",
   koneksi_bermasalah: "Koneksi bermasalah. Coba lagi.",
   pilih_jawaban: "Pilih satu tanggapan dulu.",
   aturan_enable:
@@ -473,7 +474,9 @@ async function loadThemes() {
     elements.testTheme.disabled = themes.length === 0;
     state.isQuestionBankLoaded = themes.length > 0 && !state.sessionClosed;
     elements.bankStatus.textContent = state.sessionClosed
-      ? t("sesi_tutup", { sesi: elements.testSession.value })
+      ? state.sessionConfig && state.sessionConfig.reason === "no_episode"
+        ? t("tidak_ada_episode")
+        : t("sesi_tutup", { sesi: elements.testSession.value })
       : themes.length
         ? ""
         : t("tema_belum_aktif");
