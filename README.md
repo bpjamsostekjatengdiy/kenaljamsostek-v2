@@ -59,12 +59,23 @@ Tab `jawaban`, `log_mulai`, dan `pesan` dibuat otomatis oleh Apps Script.
 
 Pengaturan di bagian atas skrip: `MAX_ACTIVE_QUESTIONS`, `MIN_SECONDS_PER_QUESTION`, `MAX_FOCUS_LOST`, `DEFAULT_MAX_ATTEMPTS`.
 
+## Sertifikat
+
+Diatur di sheet `pengaturan_sertifikat` (`pengaturan | nilai | keterangan`), dibuat otomatis:
+`status`, `buka_halaman`, `tutup_halaman`, `batas_waktu_feedback`, `maks_unduh`, `skor_minimal`, `wajib_tanpa_pelanggaran`, `wajib_episode_hari_ini`.
+Kelayakan dicek Apps Script (`certificate_check`) dari Feedback pertama peserta hari ini.
+
+## Pengecualian ekstensi
+
+Sheet `pengecualian_ekstensi` berisi pilihan ekstensi umum (`pola | nama_ekstensi | kategori | aktif | keterangan`). Ubah `aktif` menjadi `YA` untuk mengecualikan. Baris kategori Asisten AI jangan diaktifkan.
+
 ## Aturan Rilis
 
 - Absensi dapat dibuka tanpa pembatasan jam.
 - Absensi dan Feedback dibuka/ditutup dari sheet `sesi_aktif`.
-- Halaman sertifikat dapat dibuka mulai pukul 10.30 sampai sebelum pukul 24.00 WIB.
-- Sertifikat hanya untuk peserta yang mengisi Feedback sebelum pukul 12.00 WIB pada hari kegiatan yang sama.
+- Aturan sertifikat diatur di sheet `pengaturan_sertifikat`.
+- Leaderboard menampilkan periode episode terbaru (tanggal episode terakhir yang sudah berjalan).
+- Saat `anti_curang` ENABLE, peserta wajib mencentang persetujuan aturan sebelum mulai (dicatat di `log_mulai.setuju_aturan`).
 
 ## Menjalankan Lokal
 

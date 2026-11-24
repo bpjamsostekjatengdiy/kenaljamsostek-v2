@@ -15,6 +15,11 @@ const DEFAULT_MESSAGES = {
   tema_gagal_dimuat: "Tema belum bisa dimuat.",
   sesi_tutup: "Sesi {sesi} belum dibuka atau sudah ditutup.",
   tidak_ada_episode: "Hari ini tidak ada jadwal Sesi DIJAMIN.",
+  persetujuan_anti_curang:
+    "Saya bersedia mengerjakan secara mandiri, tidak berpindah halaman selama pengerjaan, " +
+    "tidak menggunakan bantuan AI maupun orang lain, tidak menyalin soal, dan bersedia " +
+    "dikeluarkan dari kandidat peringkat bila melanggar.",
+  persetujuan_wajib: "Centang persetujuan aturan pengerjaan terlebih dahulu.",
   koneksi_bermasalah: "Koneksi bermasalah. Coba lagi.",
   pilih_jawaban: "Pilih satu tanggapan dulu.",
   aturan_enable:
@@ -106,6 +111,24 @@ const elements = {
   message: document.querySelector("#message"),
 };
 
+// Centang persetujuan aturan (tampil hanya bila anti_curang ENABLE).
+const consentWrap = document.createElement("label");
+consentWrap.className = "consent-check hidden";
+consentWrap.innerHTML = '<input type="checkbox" id="consent-check" /><span id="consent-text"></span>';
+elements.startButton.insertAdjacentElement("beforebegin", consentWrap);
+elements.consentCheck = consentWrap.querySelector("#consent-check");
+elements.consentText = consentWrap.querySelector("#consent-text");
+elements.consentCheck.addEventListener("change", () => setLoading(false));
+
+function needsConsent() {
+  return Boolean(state.sessionConfig && state.sessionConfig.open && state.sessionConfig.antiCheat);
+}
+
+function renderConsent() {
+  consentWrap.classList.toggle("hidden", !needsConsent());
+  elements.consentText.textContent = t("persetujuan_anti_curang");
+}
+
 window.addEventListener("DOMContentLoaded", () => {
   renderSessionHeading();
   loadThemes();
@@ -117,6 +140,11 @@ elements.participantForm.addEventListener("submit", async (event) => {
 
   if (!state.isQuestionBankLoaded) {
     showMessage("Tema masih dimuat. Coba lagi sebentar.");
+    return;
+  }
+
+  if (needsConsent() && !elements.consentCheck.checked) {
+    showMessage(t("persetujuan_wajib"));
     return;
   }
 
@@ -138,6 +166,7 @@ elements.participantForm.addEventListener("submit", async (event) => {
       participant: state.participant,
       testSession: state.participant.testSession,
       testTheme: state.participant.testTheme,
+      consent: needsConsent() ? elements.consentCheck.checked : false,
     });
 
     if (!result.ok) {
@@ -481,6 +510,7 @@ async function loadThemes() {
         ? ""
         : t("tema_belum_aktif");
     updateActiveModuleLabel();
+    renderConsent();
   } catch (error) {
     state.isQuestionBankLoaded = false;
     elements.bankStatus.textContent = t("tema_gagal_dimuat");
@@ -813,7 +843,8 @@ function getThemeLabel(value) {
 }
 
 function setLoading(isLoading, text = "Memuat...") {
-  elements.startButton.disabled = isLoading || state.sessionClosed;
+  elements.startButton.disabled =
+    isLoading || state.sessionClosed || (needsConsent() && !elements.consentCheck.checked);
   elements.startButton.textContent = isLoading ? text : "Yuk Mulai";
 }
 

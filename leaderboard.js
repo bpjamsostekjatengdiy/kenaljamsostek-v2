@@ -17,21 +17,41 @@ window.addEventListener("DOMContentLoaded", () => {
 
 async function loadLeaderboard() {
   try {
-    const response = await fetch(`${LEADERBOARD_ENDPOINT_URL}?sheet=jawaban&format=json`);
+    const [response, episodeResponse] = await Promise.all([
+      fetch(`${LEADERBOARD_ENDPOINT_URL}?sheet=jawaban&format=json`),
+      fetch(`${LEADERBOARD_ENDPOINT_URL}?sheet=episode&format=json`).catch(() => null),
+    ]);
 
     if (!response.ok) {
       throw new Error(`Data leaderboard belum bisa dibaca (${response.status}).`);
     }
 
     const payload = await response.json();
-    const rows = ResultPolicy.getOfficialRows(Array.isArray(payload) ? payload : payload.rows || [])
+    const allPostRows = ResultPolicy.getOfficialRows(Array.isArray(payload) ? payload : payload.rows || [])
       .map(normalizeRow)
-      .filter((row) => row.name && row.sessionType === "post" && row.dateKey)
-      // Baris yang ditandai server (keluar layar, terlalu cepat, terlambat) tidak ikut peringkat.
-      .filter((row) => !row.flagged);
-    const latestDate = rows.map((row) => row.dateKey).sort().at(-1);
-    const winners = rows
-      .filter((row) => row.dateKey === latestDate)
+      .filter((row) => row.name && row.sessionType === "post" && row.dateKey);
+    let episodeDates = [];
+
+    try {
+      const episodePayload = episodeResponse ? await episodeResponse.json() : {};
+      episodeDates = (episodePayload.rows || [])
+        .map((row) => getEpisodeDateKey(row))
+        .filter(Boolean);
+    } catch (error) {
+      episodeDates = [];
+    }
+
+    // Periode = sesi terbaru: tanggal episode terakhir yang sudah berjalan (<= hari ini).
+    // Tanpa data episode: tanggal Feedback terbaru, termasuk baris yang ditandai.
+    // Tanggal dipilih SEBELUM baris yang ditandai dibuang, supaya periode tidak mundur.
+    const todayKey = getDateKey(new Date());
+    const latestDate =
+      episodeDates.filter((key) => key <= todayKey).sort().at(-1) ||
+      allPostRows.map((row) => row.dateKey).sort().at(-1);
+
+    // Baris yang ditandai server (keluar layar, ekstensi, terlalu cepat) tidak ikut peringkat.
+    const winners = allPostRows
+      .filter((row) => row.dateKey === latestDate && !row.flagged)
       .sort((first, second) => second.score - first.score || first.durationSeconds - second.durationSeconds)
       .slice(0, 10);
 
@@ -40,6 +60,21 @@ async function loadLeaderboard() {
     elements.empty.classList.remove("hidden");
     showMessage("Leaderboard belum bisa dimuat. Pastikan Apps Script sudah aktif.");
   }
+}
+
+// Kolom tanggal sheet episode: teks dd-mm-yyyy atau tanggal (ISO).
+function getEpisodeDateKey(row) {
+  const value = String(
+    row.Tanggal || row.tanggal || row.tanggal_pelaksanaan || row.date || row.tgl || row.hari_tanggal || "",
+  ).trim();
+  const match = value.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})$/);
+
+  if (match) {
+    const year = match[3].length === 2 ? `20${match[3]}` : match[3];
+    return `${year}-${match[2].padStart(2, "0")}-${match[1].padStart(2, "0")}`;
+  }
+
+  return value ? getDateKey(value) : "";
 }
 
 function normalizeRow(row) {

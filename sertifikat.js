@@ -18,16 +18,18 @@ const elements = {
   message: document.querySelector("#message"),
 };
 
-let responseRows = [];
-let episodeRows = [];
+// Aturan sertifikat (jam buka, batas Feedback, maks unduh, skor minimal, dll.)
+// diatur di sheet pengaturan_sertifikat dan dicek oleh Apps Script.
 let currentCertificate = null;
 let currentPrintCount = 0;
+let maxPrint = 2;
+let certificateStatus = null;
 
 window.addEventListener("DOMContentLoaded", () => {
   elements.date.textContent = formatLongDate(new Date());
   enableCertificatePageProtection();
   updatePrintButton(0, true);
-  loadCertificateData();
+  loadCertificateStatus();
 });
 
 elements.form.addEventListener("submit", async (event) => {
@@ -39,18 +41,25 @@ elements.print.addEventListener("click", async () => {
   await printCertificate();
 });
 
-async function loadCertificateData() {
-  const [responses, episodes] = await Promise.allSettled([loadResponses(), loadEpisodes()]);
-
-  if (responses.status === "fulfilled") {
-    responseRows = responses.value;
-  } else {
-    responseRows = [];
-    showMessage("Data feedback belum bisa dimuat. Coba lagi sebentar.");
+async function loadCertificateStatus() {
+  try {
+    const response = await fetch(`${CERTIFICATE_RESPONSE_ENDPOINT_URL}?action=certificate_status`);
+    certificateStatus = await response.json();
+  } catch (error) {
+    certificateStatus = null;
+    showMessage("Pengaturan sertifikat belum bisa dimuat. Coba lagi sebentar.");
+    return;
   }
 
-  episodeRows = episodes.status === "fulfilled" ? episodes.value : [];
-  renderEventInfo();
+  maxPrint = Number.isFinite(Number(certificateStatus.maxPrint)) ? Number(certificateStatus.maxPrint) : 2;
+  updatePrintButton(0, true);
+  const today = new Date();
+  const episode = certificateStatus.episode || "Episode belum tersedia";
+  elements.eventInfo.textContent = `Kegiatan DIJAMIN : ${episode} tanggal ${formatLongDate(today)}`;
+
+  if (!certificateStatus.open) {
+    showCertificateStatus(certificateStatus.message || "Halaman sertifikat sedang ditutup.");
+  }
 }
 
 async function generateCertificate() {
@@ -66,63 +75,64 @@ async function generateCertificate() {
     return;
   }
 
-  if (responseRows.length === 0) {
-    await loadCertificateData();
-  }
+  let result;
 
-  if (responseRows.length === 0) {
-    showMessage("Data feedback belum tersedia untuk dicek.");
+  try {
+    const response = await fetch(CERTIFICATE_RESPONSE_ENDPOINT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ action: "certificate_check", phone }),
+    });
+    result = await response.json();
+  } catch (error) {
+    showMessage("Data sertifikat belum bisa dicek. Coba lagi sebentar.");
     return;
   }
 
-  const todayKey = getDateKey(new Date());
-  const participantFeedbackRows = findParticipantFeedbackRows(phone, todayKey);
-  const participant = participantFeedbackRows.find(isBeforeCertificateCutoff);
-
-  if (!participant) {
+  if (!result.ok) {
     elements.stage.classList.add("hidden");
-    const message = participantFeedbackRows.length
-      ? getLateFeedbackMessage()
-      : getMissingFeedbackMessage(phone, todayKey);
-    showCertificateStatus(message);
-    showMessage(message);
+    showCertificateStatus(result.message);
+    showMessage(result.message);
     return;
   }
 
-  const participantDate = getDateKey(participant.timestamp || participant.submittedAt);
-  const participantDateObject = getDateObject(participant.timestamp || participant.submittedAt) || new Date();
-  const episode = findEpisodeForDate(participantDate);
-  const fallbackTheme = participant.tema || participant.testTheme || "Kegiatan Literasi New DIJAMIN";
-  const participantName = (participant.nama_lengkap || participant.fullName || "").toUpperCase();
-  const episodeText = episode || `"${fallbackTheme}"`;
+  maxPrint = Number.isFinite(Number(result.maxPrint)) ? Number(result.maxPrint) : maxPrint;
+  const participantDateObject = getDateObject(result.submittedAt) || new Date();
+  const participantName = String(result.name || "").toUpperCase();
+  const episodeText = result.episode || `"${result.theme || "Kegiatan Literasi New DIJAMIN"}"`;
   const dateText = formatLongDate(participantDateObject);
   const serialText = `SERIAL: ${formatPhoneForSerial(phone)}-${formatSerialDate(participantDateObject)}`;
   currentCertificate = {
     phone,
-    dateKey: participantDate,
+    dateKey: result.dateKey,
     name: participantName,
     episode: episodeText,
     date: dateText,
     serial: serialText,
+    limitMessage: result.batasUnduhMessage,
   };
-  currentPrintCount = getCertificatePrintCount(participant);
+  currentPrintCount = Number(result.printCount) || 0;
 
   elements.name.textContent = participantName;
   elements.episode.textContent = episodeText;
   elements.date.textContent = dateText;
   elements.serial.textContent = serialText;
-  updatePrintButton(currentPrintCount, currentPrintCount >= 2);
+  updatePrintButton(currentPrintCount, isPrintLimitReached());
   elements.stage.classList.remove("hidden");
   elements.status.classList.add("hidden");
   elements.status.innerHTML = "";
 
-  if (currentPrintCount >= 2) {
-    showCertificateStatus("Batas download sertifikat sudah tercapai. Sertifikat hanya dapat diunduh maksimal 2x di hari kegiatan yang sama.");
+  if (isPrintLimitReached()) {
+    showCertificateStatus(currentCertificate.limitMessage || "Batas download sertifikat sudah tercapai.");
     showMessage("Batas download sertifikat sudah tercapai.");
     return;
   }
 
-  showMessage("Sertifikat siap diunduh.");
+  showMessage(result.message || "Sertifikat siap diunduh.");
+}
+
+function isPrintLimitReached() {
+  return maxPrint > 0 && currentPrintCount >= maxPrint;
 }
 
 async function printCertificate() {
@@ -131,9 +141,9 @@ async function printCertificate() {
     return;
   }
 
-  if (currentPrintCount >= 2) {
+  if (isPrintLimitReached()) {
     updatePrintButton(currentPrintCount, true);
-    showCertificateStatus("Batas download sertifikat sudah tercapai. Sertifikat hanya dapat diunduh maksimal 2x di hari kegiatan yang sama.");
+    showCertificateStatus(currentCertificate.limitMessage || "Batas download sertifikat sudah tercapai.");
     showMessage("Batas download sertifikat sudah tercapai.");
     return;
   }
@@ -149,15 +159,14 @@ async function printCertificate() {
     return;
   }
 
-  const nextCount = currentPrintCount + 1;
-  currentPrintCount = nextCount;
-  updatePrintButton(currentPrintCount, currentPrintCount >= 2);
+  currentPrintCount += 1;
+  updatePrintButton(currentPrintCount, isPrintLimitReached());
   recordCertificatePrint(currentCertificate);
   showMessage("Sertifikat JPG berhasil diunduh.");
 }
 
 function updatePrintButton(count, disabled = false) {
-  elements.print.textContent = `Download JPG (${count}/2)`;
+  elements.print.textContent = maxPrint > 0 ? `Download JPG (${count}/${maxPrint})` : "Download JPG";
   elements.print.disabled = disabled;
 }
 
@@ -307,10 +316,6 @@ function slugify(value) {
     .slice(0, 80);
 }
 
-function getCertificatePrintCount(row) {
-  const count = Number(row.cetak_sertif || row.cetakSertif || row.print_count || 0);
-  return Number.isFinite(count) ? Math.max(0, count) : 0;
-}
 
 function recordCertificatePrint(certificate) {
   const payload = {
@@ -340,67 +345,11 @@ function recordCertificatePrint(certificate) {
   });
 }
 
-function findParticipantFeedbackRows(phone, dateKey) {
-  return responseRows.filter((row) => {
-    const rowPhone = normalizePhone(row.nomor_wa || row.whatsappNumber);
-    const rowSession = getSessionType(row.sesi || row.testSession);
-    const rowDate = getDateKey(row.timestamp || row.submittedAt);
 
-    return rowPhone === phone && rowSession === "post" && rowDate === dateKey;
-  });
-}
 
-function isBeforeCertificateCutoff(row) {
-  const submittedAt = getDateObject(row.timestamp || row.submittedAt);
 
-  if (!submittedAt) {
-    return false;
-  }
 
-  const cutoff = new Date(`${getDateKey(submittedAt)}T12:00:00+07:00`);
-  return submittedAt < cutoff;
-}
 
-function getLateFeedbackMessage() {
-  return "Anda terdeteksi melakukan pengisian feedback setelah kegiatan berakhir, sehingga tidak bisa cetak sertifikat.\n\nNantikan episode DIJAMIN berikutnya. Terima kasih";
-}
-
-function getClosedFeedbackMessage() {
-  return "Tidak bisa mencetak sertifikat dan mengisi feedback karena kegiatan sudah selesai.\n\nNantikan episode DIJAMIN berikutnya.\n\nTerima kasih";
-}
-
-function getMissingFeedbackMessage(phone, dateKey) {
-  if (isAfterDailyCutoff(new Date())) {
-    return getClosedFeedbackMessage();
-  }
-
-  const samePhoneRows = responseRows.filter(
-    (row) => normalizePhone(row.nomor_wa || row.whatsappNumber) === phone,
-  );
-
-  if (samePhoneRows.length === 0) {
-    return "Nomor HP belum ditemukan di data Feedback. Silakan isi Feedback terlebih dahulu agar sertifikat bisa dibuat.";
-  }
-
-  const hasPost = samePhoneRows.some((row) => getSessionType(row.sesi || row.testSession) === "post");
-
-  if (!hasPost) {
-    return "Nomor HP ditemukan, tetapi datanya baru Absensi. Silakan isi Feedback terlebih dahulu agar sertifikat bisa dibuat.";
-  }
-
-  const hasToday = samePhoneRows.some((row) => getDateKey(row.timestamp || row.submittedAt) === dateKey);
-
-  if (!hasToday) {
-    return "Nomor HP ditemukan, tetapi bukan data Feedback hari ini.";
-  }
-
-  return "Data feedback hari ini untuk nomor HP tersebut belum ditemukan.";
-}
-
-function isAfterDailyCutoff(date) {
-  const cutoff = new Date(`${getDateKey(date)}T12:00:00+07:00`);
-  return date >= cutoff;
-}
 
 function showCertificateStatus(text) {
   elements.status.textContent = text;
@@ -415,57 +364,9 @@ function showCertificateStatus(text) {
   elements.status.classList.remove("hidden");
 }
 
-async function loadResponses() {
-  const response = await fetch(`${CERTIFICATE_RESPONSE_ENDPOINT_URL}?sheet=jawaban&format=json`);
 
-  if (!response.ok) {
-    throw new Error("Gagal membaca jawaban.");
-  }
 
-  const payload = await response.json();
-  return Array.isArray(payload) ? payload : payload.rows || [];
-}
 
-async function loadEpisodes() {
-  const response = await fetch(`${CERTIFICATE_RESPONSE_ENDPOINT_URL}?sheet=episode&format=json`);
-
-  if (!response.ok) {
-    return [];
-  }
-
-  const payload = await response.json();
-  const rows = Array.isArray(payload) ? payload : payload.rows || [];
-  return rows.map(normalizeObjectKeys);
-}
-
-function findEpisodeForDate(dateKey) {
-  const episode = episodeRows.find((row) => {
-    const value =
-      row.tanggal_pelaksanaan || row.tanggal || row.date || row.tgl || row.hari_tanggal || "";
-    return (normalizeDateText(value) || getDateKey(value)) === dateKey;
-  });
-
-  if (!episode) {
-    return "";
-  }
-
-  return (
-    episode.episode ||
-    episode.topik ||
-    episode.tema ||
-    episode.judul ||
-    episode.nama_episode ||
-    episode.nama_modul ||
-    ""
-  );
-}
-
-function renderEventInfo() {
-  const today = new Date();
-  const todayKey = getDateKey(today);
-  const episode = findEpisodeForDate(todayKey) || "Episode belum tersedia";
-  elements.eventInfo.textContent = `Kegiatan DIJAMIN : ${episode} tanggal ${formatLongDate(today)}`;
-}
 
 function normalizeDateText(value) {
   const text = String(value || "").trim();
